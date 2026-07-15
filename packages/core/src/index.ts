@@ -1,4 +1,66 @@
-// Public API entry point. The first contracts are tracked in
-// todo/core-model-and-schema.md.
-// oxlint-disable-next-line unicorn/require-module-specifiers
-export {};
+export type {
+  Adapter,
+  ApplyCapability,
+  ApplyContext,
+  ApplyResult,
+  AttributeProjection,
+  OpenContext,
+  Operation,
+  PlanningCapability,
+  PlanContext,
+  ReadCapability,
+  ResourceHandle,
+  RootRequest,
+  SourceDescriptor,
+} from "./adapter.js";
+export { defineDiagnostic } from "./diagnostic.js";
+export type {
+  Diagnostic,
+  DiagnosticLocation,
+  DiagnosticSeverity,
+} from "./diagnostic.js";
+export {
+  assertNamespace,
+  assertNamespacedName,
+  defineEdge,
+  defineNodeSnapshot,
+  defineResource,
+} from "./model.js";
+export type {
+  AttributeValue,
+  Edge,
+  EdgeName,
+  EdgeRequest,
+  EdgeRole,
+  NamespacedName,
+  NodeHandle,
+  NodeId,
+  NodeKind,
+  NodeSnapshot,
+  OperationKind,
+  Origin,
+  Resource,
+  Revision,
+  Scalar,
+  Selection,
+  SelectionOrdering,
+  SourceRange,
+} from "./model.js";
+export { defineAdapterSchema } from "./schema.js";
+export type {
+  AdapterCapabilities,
+  AdapterSchema,
+  AttributeSchema,
+  Cardinality,
+  DynamicAdapterSchema,
+  EdgeSchema,
+  IdentityGuarantee,
+  NodeKindSchema,
+  OperationArgumentSchema,
+  OperationSchema,
+  PushdownCapability,
+  ScalarType,
+  StaticAdapterSchema,
+  TraversalCapability,
+  TreeViewSchema,
+} from "./schema.js";

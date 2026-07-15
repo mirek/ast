@@ -139,6 +139,13 @@ database connection, Git repository, or HTTP endpoint.
 Resources have stable runtime identifiers and MAY expose a revision used for
 optimistic concurrency control.
 
+The public resource descriptor is an immutable value containing an adapter
+namespace, runtime identifier, URI, and optional revision. A revision is an
+opaque token observed when the resource was opened. Revisions are equal only
+when their strings are exactly equal; no lexical ordering or numeric meaning is
+implied. Resource handles keep lifecycle capabilities such as `close` separate
+from the descriptor.
+
 ### 6.2 Node
 
 A node is an immutable observation of part of a resource.
@@ -171,13 +178,33 @@ export interface NodeSnapshot {
   readonly id: NodeId;
   readonly kind: `${string}::${string}`;
   readonly attributes: Readonly<Record<string, Scalar | readonly Scalar[]>>;
-  readonly origin: Origin;
+  readonly origin?: Origin;
 }
 ```
 
 `NodeId` identifies a logical node within an observed resource revision. It is
 not required to survive arbitrary external rewrites. Adapters MUST document
-their identity guarantees.
+their identity guarantees. Node identities are equal when all three `adapter`,
+`resource`, and `local` fields are exactly equal within the same observed
+revision. JavaScript object identity has no semantic meaning.
+
+Source-backed addressable nodes MUST carry an origin. Synthetic nodes MAY omit
+it only when no source location exists; derived nodes SHOULD retain the most
+specific available origin. Source ranges are half-open (`start <= offset < end`)
+and adapters MUST document their offset coordinate system.
+
+Node kinds, edge names, operation kinds, and tree-view names are namespaced.
+The TypeScript template-literal type preserves names statically, while public
+definition helpers also reject malformed or unqualified names at runtime.
+Each node kind belongs to the adapter recorded in that node's identity.
+Definition helpers detach and recursively freeze graph values so callers cannot
+retain mutable parser or adapter state through public observations.
+
+An absent attribute is the missing value. It is distinct from an attribute
+whose value is explicit `null`. Equality of scalar attributes follows exact
+JavaScript primitive equality without implicit string, number, boolean, or
+`bigint` coercion; array values compare element-by-element when an operator
+requires value equality.
 
 Large values, binary data, and recursively structured values SHOULD be exposed
 as child nodes or lazy properties instead of embedded attributes.
@@ -186,7 +213,7 @@ as child nodes or lazy properties instead of embedded attributes.
 
 ```ts
 export interface Edge {
-  readonly name: string;
+  readonly name: `${string}::${string}`;
   readonly role: "child" | "reference";
   readonly from: NodeId;
   readonly to: NodeId;
@@ -209,9 +236,10 @@ adapter-owned capabilities. Handles MUST NOT expose mutable backing objects.
 
 ### 6.5 Selection
 
-A selection is an ordered, lazy, asynchronous sequence of node handles or
-derived values. Selection operators preserve streaming unless their semantics
-require buffering, as with a global sort.
+A selection is a lazy asynchronous sequence of node handles or derived values
+with a declared `stable` or `unknown` ordering guarantee. Selection operators
+preserve streaming unless their semantics require buffering, as with a global
+sort.
 
 ### 6.6 Capture
 
@@ -260,12 +288,11 @@ An adapter owns resource discovery, node projection, query optimization,
 operations, change planning, and application for a domain.
 
 ```ts
-export interface Adapter {
-  readonly namespace: string;
-  readonly schema: AdapterSchema;
-  readonly capabilities: AdapterCapabilities;
-
-  open(source: SourceDescriptor, context: OpenContext): Promise<Resource>;
+export interface ReadCapability {
+  open(
+    source: SourceDescriptor,
+    context: OpenContext,
+  ): Promise<ResourceHandle>;
 
   roots(
     resource: Resource,
@@ -281,17 +308,32 @@ export interface Adapter {
     ids: readonly NodeId[],
     projection: AttributeProjection,
   ): Promise<readonly NodeSnapshot[]>;
+}
 
-  compile?(fragment: LogicalQuery): Promise<NativeQuery | Unsupported>;
-  execute?(query: NativeQuery): AsyncIterable<NodeSnapshot>;
+export interface PlanningCapability<
+  Input extends Operation = Operation,
+  Planned = unknown,
+> {
+  plan(operation: Input, context: PlanContext): Promise<readonly Planned[]>;
+}
 
-  plan(operation: Operation, context: PlanContext): Promise<readonly Change[]>;
-  apply(changes: readonly Change[], context: ApplyContext): Promise<ApplyResult>;
+export interface ApplyCapability<Planned = unknown, Result = unknown> {
+  apply(changes: readonly Planned[], context: ApplyContext): Promise<Result>;
+}
+
+export interface Adapter {
+  readonly namespace: string;
+  readonly schema: AdapterSchema;
+  readonly read?: ReadCapability;
+  readonly planning?: PlanningCapability;
+  readonly apply?: ApplyCapability;
 }
 ```
 
-This interface is illustrative. The implementation MAY separate read,
-transform, and apply capabilities into smaller composable interfaces.
+Read, planning, and apply are separate structural capabilities. Possessing a
+read capability never implies permission to plan or apply effects. Native query
+compilation and execution remain provisional extensions to be added only when
+the query runtime and adapter evidence require them.
 
 ### 7.1 Capabilities
 
@@ -356,6 +398,14 @@ still performs schema validation and reports source-located diagnostics.
 Schemas describe the exposed logical model, not necessarily the physical
 storage schema. A SQL adapter, for example, may expose server, database,
 schema, table, column, relation, and row node kinds.
+
+The current serializable schema contract contains a namespace and version;
+node-kind, attribute, edge, operation-argument, and tree-view descriptions;
+identity and ordering guarantees; and declared capabilities. A schema owns the
+names it defines, permits at most one default tree view, and cannot contain
+duplicate definitions. Static schemas use `dynamic: false`. Runtime-loaded
+plugin schemas use the explicit `dynamic: true` escape hatch but remain subject
+to the same runtime structural and namespace validation.
 
 ## 9. Selector language
 
@@ -795,17 +845,16 @@ design:
 The active, dependency-aware form of this sequence lives in
 [TODO.md](./TODO.md). That index and its files contain only work that remains.
 
-1. Define the node, edge, resource, schema, selection, and diagnostic types.
-2. Implement an in-memory test adapter and executable logical query algebra.
-3. Implement filesystem traversal with streaming and predicate pushdown.
-4. Implement JSON mounting and prove cross-adapter traversal.
-5. Implement plan construction, file diffs, preconditions, and explicit apply.
-6. Add Markdown and TypeScript adapters to pressure-test semantic trees and
+1. Implement an in-memory test adapter and executable logical query algebra.
+2. Implement filesystem traversal with streaming and predicate pushdown.
+3. Implement JSON mounting and prove cross-adapter traversal.
+4. Implement plan construction, file diffs, preconditions, and explicit apply.
+5. Add Markdown and TypeScript adapters to pressure-test semantic trees and
    reference edges.
-7. Stabilize the adapter and operation contracts.
-8. Design the textual DSL from the proven TypeScript algebra.
-9. Add plugin loading and manifests.
-10. Prototype one SQL adapter specifically to test lazy query pushdown, joins,
+6. Stabilize the adapter and operation contracts.
+7. Design the textual DSL from the proven TypeScript algebra.
+8. Add plugin loading and manifests.
+9. Prototype one SQL adapter specifically to test lazy query pushdown, joins,
     transactions, and the limits of the abstraction.
 
 The primary limiting factor is not parsing or selector syntax. It is defining

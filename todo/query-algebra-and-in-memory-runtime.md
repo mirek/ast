@@ -1,7 +1,7 @@
 ---
 title: Build the logical query algebra and in-memory runtime
 summary: Validate ordered lazy selections, captures, projections, joins, cancellation, and resource cleanup without I/O complexity.
-depends_on: [core-model-and-schema]
+depends_on: []
 spec_sections: [6.4, 6.5, 6.6, 11, 12]
 ---
 

@@ -23,7 +23,7 @@
   "scripts": {
     "build": "tsc --build tsconfig.build.json",
     "clean": "rm -rf dist *.tsbuildinfo",
-    "test": "node --test",
+    "test": "pnpm run build && node --test test/*.test.mjs",
     "typecheck": "tsc --build"
   }
 }
