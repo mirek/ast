@@ -1,0 +1,4 @@
+interface:
+  display_name: "Evolve ast spec"
+  short_description: "Refine ast architecture and implementation tasks"
+  default_prompt: "Use $evolve-ast-spec to refine the ast specification and TODOs."

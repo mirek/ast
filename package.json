@@ -1,0 +1,26 @@
+{
+  "name": "@mirek/ast-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A typed node-graph query and transformation runtime for heterogeneous resources.",
+  "type": "module",
+  "packageManager": "pnpm@11.13.0",
+  "repository": "github:mirek/ast",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=11.0.0"
+  },
+  "scripts": {
+    "build": "pnpm --recursive --if-present run build",
+    "check": "pnpm lint && pnpm typecheck && pnpm test",
+    "clean": "pnpm --recursive --if-present run clean",
+    "lint": "oxlint --deny-warnings .",
+    "test": "pnpm --recursive --if-present run test",
+    "typecheck": "pnpm --recursive --if-present run typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "oxlint": "catalog:",
+    "typescript": "catalog:"
+  }
+}
