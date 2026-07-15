@@ -5,7 +5,6 @@ unless a prototype is explicitly intended to answer an earlier design question.
 When a task is complete, delete both its file and this index entry rather than
 marking it completed.
 
-- [Selector engine](./todo/selector-engine.md) — parse, validate, and execute the typed selector subset over tree and reference edges.
 - [Filesystem adapter](./todo/filesystem-adapter.md) — stream repository trees with safe read and mutation planning boundaries.
 - [JSON adapter and mounting](./todo/json-adapter-and-mounting.md) — prove cross-adapter traversal and faithful ordinary JSON updates.
 - [Change plans and local apply](./todo/change-plans-and-local-apply.md) — add pure planning, diffs, conflict detection, revision checks, and explicit application.

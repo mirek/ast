@@ -433,6 +433,15 @@ Supported attribute operators SHOULD include:
 Expressions MUST use typed comparison. Implicit coercion between strings,
 numbers, and booleans is forbidden.
 
+The initial executable subset uses scalar literals (`string`, `number`,
+`bigint`, `boolean`, and `null`), `in (...)` membership, `/pattern/flags`
+regular expressions with `~=`, `[attribute is null]`, and
+`[attribute is missing]`. For multi-valued attributes, positive comparisons
+match when any value matches; `!=` matches only when no value equals the
+operand. `*=` is string containment for scalar strings and membership for
+multi-valued attributes. Relational operators are invalid for booleans and
+nulls.
+
 ### 9.2 Tree combinators
 
 ```text
@@ -449,19 +458,24 @@ Sibling combinators are available only for ordered child edges.
 Reference traversal is explicit:
 
 ```text
-ts::identifier ->symbol ts::declaration
-sql::row ->foreign-key sql::row
-fs::symlink ->target fs::entry
+ts::identifier ->ts::symbol ts::declaration
+sql::row ->sql::foreign-key sql::row
+fs::symlink ->fs::target fs::entry
 ```
 
 Reverse traversal uses `<-edge`:
 
 ```text
-ts::function <-calls ts::call
+ts::function <-ts::calls ts::call
 ```
 
 Cycles are not followed recursively unless the query explicitly requests a
 bounded or cycle-safe transitive traversal.
+
+Kind and edge names in the executable selector subset are always fully
+namespaced. Named-edge combinators are single-hop; recursive reference
+traversal remains available only through the query algebra's explicit bounded
+`traverse` operator.
 
 ### 9.4 Predicates
 
@@ -473,6 +487,11 @@ The initial selector set SHOULD support:
 - adapter-defined, schema-declared predicates;
 - boolean scalar expressions;
 - explicit null and missing-value tests.
+
+The executable subset supports `:not`, `:is`, and `:has`. A relative selector
+inside `:has` may begin with a combinator; without one it means descendant
+matching. Nested selectors are compiled from the same query operators as
+top-level selectors.
 
 ### 9.5 Captures
 

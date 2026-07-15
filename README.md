@@ -7,7 +7,7 @@ code, documents, and databases.
 The repository contains the architecture specification, implementation backlog,
 and a buildable TypeScript monorepo. `@mirek/ast` provides immutable graph,
 resource, schema, diagnostic, and capability contracts plus an executable lazy
-query algebra. The CLI is not yet implemented.
+query algebra and selector compiler. The CLI is not yet implemented.
 
 Read [SPEC.md](./SPEC.md) for the architecture and [TODO.md](./TODO.md) for the
 ordered set of work that remains.
@@ -16,7 +16,8 @@ ordered set of work that remains.
 
 - `@mirek/ast` — pure graph, adapter, query, and change-planning library; its
   model, schema, lazy query runtime, explain plans, and in-memory adapter are
-  available now
+  available now, together with selector parsing, schema validation, and query
+  compilation
 - `@mirek/ast-cli` — CLI boundary reserved for later implementation
 
 Both packages remain private until their public names and contracts are
@@ -47,6 +48,22 @@ The public algebra includes filtering, projection, flat mapping, distinctness,
 limits, counting, grouping, sorting, captures, equality joins, and bounded tree
 or reference-edge traversal. `createInMemoryAdapter` supplies deterministic
 fixtures for adapter and selector development without filesystem effects.
+
+Selectors use namespaced kinds and edges and compile into that same algebra.
+Comparisons are checked against the adapter schema before execution; missing
+attributes remain distinct from explicit `null` values.
+
+```ts
+import { select } from "@mirek/ast";
+
+const calls = select(
+  adapter,
+  { uri: "memory:project" },
+  'ts::function[name ^= "parse"] ts::call[callee ~= /deprecated/i]',
+);
+
+const result = await calls.toArray({ signal });
+```
 
 ## Development
 

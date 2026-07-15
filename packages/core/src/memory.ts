@@ -9,6 +9,7 @@ import type {
 } from "./adapter.js";
 import { defineEdge, defineNodeSnapshot, defineResource } from "./model.js";
 import type {
+  AttributeValue,
   Edge,
   EdgeRequest,
   NodeId,
@@ -17,6 +18,7 @@ import type {
   SelectionOrdering,
 } from "./model.js";
 import { defineAdapterSchema } from "./schema.js";
+import type { AttributeSchema, ScalarType } from "./schema.js";
 
 export interface InMemoryFixture {
   readonly resource: Resource;
@@ -46,6 +48,42 @@ const abort = (signal: AbortSignal | undefined): void => {
   signal?.throwIfAborted();
 };
 
+const scalarTypeOf = (value: Exclude<AttributeValue, readonly unknown[]>): ScalarType => {
+  if (value === null) return "null";
+  if (typeof value === "string") return "string";
+  if (typeof value === "number") return "number";
+  if (typeof value === "boolean") return "boolean";
+  return "bigint";
+};
+
+const inferAttributes = (
+  nodes: readonly NodeSnapshot[],
+): Readonly<Record<string, AttributeSchema>> => {
+  const names = [...new Set(nodes.flatMap(({ attributes }) => Object.keys(attributes)))];
+  return Object.fromEntries(
+    names.map((name) => {
+      const present = nodes.filter(({ attributes }) => Object.hasOwn(attributes, name));
+      const values = present.flatMap(({ attributes }) => {
+        const value = attributes[name];
+        return value === undefined ? [] : Array.isArray(value) ? value : [value];
+      });
+      const types = [...new Set(values.map(scalarTypeOf))];
+      const scalar: ScalarType | readonly ScalarType[] =
+        types.length === 1 ? (types[0] ?? "null") : types;
+      return [
+        name,
+        {
+          scalar,
+          cardinality: present.some(({ attributes }) => Array.isArray(attributes[name]))
+            ? "many"
+            : "one",
+          required: present.length === nodes.length,
+        },
+      ];
+    }),
+  );
+};
+
 const inferSchema = (
   resource: Resource,
   nodes: readonly NodeSnapshot[],
@@ -59,11 +97,14 @@ const inferSchema = (
     namespace: resource.adapter,
     version: "1.0.0",
     dynamic: true,
-    kinds: kinds.map((kind) => ({
-      kind,
-      attributes: {},
-      identity: { stability: "revision", description: "in-memory fixture node id" },
-    })),
+    kinds: kinds.map((kind) => {
+      const matching = nodes.filter((node) => node.kind === kind);
+      return {
+        kind,
+        attributes: inferAttributes(matching),
+        identity: { stability: "revision", description: "in-memory fixture node id" },
+      };
+    }),
     edges: edgeNames.map((name) => {
       const matching = edges.filter((edge) => edge.name === name);
       return {
