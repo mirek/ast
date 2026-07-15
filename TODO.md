@@ -5,7 +5,6 @@ unless a prototype is explicitly intended to answer an earlier design question.
 When a task is complete, delete both its file and this index entry rather than
 marking it completed.
 
-- [Query algebra and in-memory runtime](./todo/query-algebra-and-in-memory-runtime.md) — prove lazy selection semantics with an executable test adapter.
 - [Selector engine](./todo/selector-engine.md) — parse, validate, and execute the typed selector subset over tree and reference edges.
 - [Filesystem adapter](./todo/filesystem-adapter.md) — stream repository trees with safe read and mutation planning boundaries.
 - [JSON adapter and mounting](./todo/json-adapter-and-mounting.md) — prove cross-adapter traversal and faithful ordinary JSON updates.

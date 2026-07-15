@@ -6,6 +6,7 @@ import type {
   PlanningCapability,
   ReadCapability,
 } from "../src/index.js";
+import { capture, fromValues, project } from "../src/index.js";
 
 const syntheticNode: NodeSnapshot = {
   id: { adapter: "memory", resource: "fixture", local: "derived" },
@@ -45,3 +46,12 @@ const dynamicSchema: DynamicAdapterSchema = {
 
 const schema: AdapterSchema = dynamicSchema;
 void schema;
+
+const captured = capture(fromValues([1, 2]), "original");
+const projected = project(captured, (value, captures) => value + captures.original);
+void projected;
+
+project(fromValues([1, 2]), (value, captures) => {
+  // @ts-expect-error captures enter scope only after an explicit capture operator
+  return value + captures.original;
+});
