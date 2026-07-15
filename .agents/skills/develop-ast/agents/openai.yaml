@@ -1,0 +1,4 @@
+interface:
+  display_name: "Develop ast"
+  short_description: "Implement ast from its spec and active TODOs"
+  default_prompt: "Use $develop-ast to implement the next ast vertical slice."

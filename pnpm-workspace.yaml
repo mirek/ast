@@ -1,0 +1,7 @@
+packages:
+  - packages/*
+
+catalog:
+  '@types/node': 26.1.1
+  oxlint: 1.74.0
+  typescript: 7.0.2

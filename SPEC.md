@@ -792,6 +792,9 @@ design:
 
 ## 21. Recommended implementation sequence
 
+The active, dependency-aware form of this sequence lives in
+[TODO.md](./TODO.md). That index and its files contain only work that remains.
+
 1. Define the node, edge, resource, schema, selection, and diagnostic types.
 2. Implement an in-memory test adapter and executable logical query algebra.
 3. Implement filesystem traversal with streaming and predicate pushdown.
