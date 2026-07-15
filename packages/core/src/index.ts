@@ -46,6 +46,42 @@ export type {
   SelectionOrdering,
   SourceRange,
 } from "./model.js";
+export { createInMemoryAdapter } from "./memory.js";
+export type {
+  InMemoryAdapter,
+  InMemoryFixture,
+  InMemoryStatistics,
+} from "./memory.js";
+export {
+  Query,
+  capture,
+  count,
+  distinct,
+  filter,
+  flatMap,
+  fromAdapter,
+  fromValues,
+  groupBy,
+  join,
+  project,
+  sort,
+  take,
+  traverse,
+} from "./query.js";
+export type {
+  CaptureMap,
+  EmptyCaptures,
+  ExecuteOptions,
+  Group,
+  JoinOptions,
+  LogicalPlan,
+  MaybePromise,
+  NavigableNodeHandle,
+  PhysicalPlan,
+  QueryExplanation,
+  QueryOperator,
+  TraverseOptions,
+} from "./query.js";
 export { defineAdapterSchema } from "./schema.js";
 export type {
   AdapterCapabilities,

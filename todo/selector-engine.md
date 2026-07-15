@@ -1,7 +1,7 @@
 ---
 title: Implement the selector engine
 summary: Parse, validate, and execute the initial CSS-inspired selector subset over typed trees and named graph edges.
-depends_on: [query-algebra-and-in-memory-runtime]
+depends_on: []
 spec_sections: [9]
 ---
 
