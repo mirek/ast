@@ -1,6 +1,7 @@
 export type {
   Adapter,
   AdapterCompatibility,
+  AdapterPluginIdentity,
   ApplyCapability,
   ApplyContext,
   ApplyResult,
@@ -17,6 +18,26 @@ export type {
   MountSourceDescriptor,
 } from "./adapter.js";
 export { adapterCompatibility, validateAdapter } from "./adapter.js";
+export { PluginError, definePluginManifest, registerPlugins } from "./plugin.js";
+export type {
+  PluginAliases,
+  PluginContributionManifest,
+  PluginContributions,
+  PluginDiffProviderContribution,
+  PluginFunctionContribution,
+  PluginManifest,
+  PluginModule,
+  PluginMountContribution,
+  PluginOperationContribution,
+  PluginOptimizerEquivalence,
+  PluginOptimizerRule,
+  PluginPolicy,
+  PluginPower,
+  PluginPredicateContribution,
+  PluginRegistry,
+  PluginRendererContribution,
+  PluginResolverContribution,
+} from "./plugin.js";
 export {
   applyChangePlan,
   deserializeChangePlan,

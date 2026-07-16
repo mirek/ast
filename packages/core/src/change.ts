@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import type { Adapter, Operation } from "./adapter.js";
+import type { Adapter, AdapterPluginIdentity, Operation } from "./adapter.js";
 import { defineDiagnostic } from "./diagnostic.js";
 import type { Diagnostic } from "./diagnostic.js";
 import { immutableCopy } from "./immutable.js";
@@ -67,6 +67,7 @@ export interface PlannedChange extends Change {
 export interface PlanAdapterIdentity {
   readonly namespace: string;
   readonly schemaVersion: string;
+  readonly plugin?: AdapterPluginIdentity;
 }
 
 export interface PlanResourceIdentity {
@@ -110,6 +111,16 @@ export interface ApplyChangePlanOptions {
   readonly signal?: AbortSignal;
   readonly failurePolicy?: "stop" | "continue-independent";
 }
+
+const samePluginIdentity = (
+  left: AdapterPluginIdentity | undefined,
+  right: AdapterPluginIdentity | undefined,
+): boolean => left === undefined || right === undefined
+  ? left === right
+  : left.apiVersion === right.apiVersion &&
+    left.name === right.name &&
+    left.version === right.version &&
+    left.integrity === right.integrity;
 
 export type ApplyGroupStatus =
   | "applied"
@@ -247,12 +258,16 @@ const uniqueAdapters = (requests: readonly PlannedOperation[]): readonly PlanAda
   const values = new Map<string, PlanAdapterIdentity>();
   for (const { adapter } of requests) {
     const existing = values.get(adapter.namespace);
-    if (existing !== undefined && existing.schemaVersion !== adapter.schema.version) {
-      throw new TypeError(`Adapter ${adapter.namespace} has conflicting schema versions.`);
+    if (existing !== undefined && (
+      existing.schemaVersion !== adapter.schema.version ||
+      !samePluginIdentity(existing.plugin, adapter.plugin)
+    )) {
+      throw new TypeError(`Adapter ${adapter.namespace} has conflicting identities.`);
     }
     values.set(adapter.namespace, {
       namespace: adapter.namespace,
       schemaVersion: adapter.schema.version,
+      ...(adapter.plugin === undefined ? {} : { plugin: adapter.plugin }),
     });
   }
   return Object.freeze([...values.values()].map((value) => Object.freeze(value)));
@@ -453,6 +468,9 @@ const validateAdapters = (plan: ChangePlan, adapters: readonly Adapter[]): void 
       throw new TypeError(
         `Adapter ${identity.namespace} schema version ${adapter.schema.version} does not match saved schema version ${identity.schemaVersion}.`,
       );
+    }
+    if (!samePluginIdentity(adapter.plugin, identity.plugin)) {
+      throw new TypeError(`Adapter ${identity.namespace} plugin identity does not match the saved plan.`);
     }
   }
 };

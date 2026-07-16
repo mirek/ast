@@ -19,8 +19,8 @@ ordered set of work that remains.
 - `@mirek/ast` — pure graph, adapter, query, and change-planning library; its
   model, schema, lazy query runtime, explain plans, and in-memory adapter are
   available now, together with selector parsing, schema validation, and query
-  compilation; the filesystem and JSON adapters provide lazy reads, nested
-  mounts, and pure change planning
+  compilation; built-in and policy-validated plugin adapters provide lazy
+  reads, nested mounts, and pure change planning
 - `@mirek/ast-cli` — executable boundary for querying, planning, explaining,
   and explicitly applying changes
 
@@ -261,6 +261,40 @@ inner equality joins, invocation, and terminal planning. It has no imports,
 modules, user functions, arbitrary code execution, loops, or recursion. Parser,
 selector, schema/type, capability, and planning diagnostics retain DSL source
 locations, and `formatDsl` is deterministic.
+
+## Plugins and trust
+
+`registerPlugins` validates explicit manifests and contribution lists before a
+plugin is used. Plugin adapters publish runtime-validated `dynamic: true`
+schemas. Namespaces are globally unique, aliases are explicit, optimizer rules
+are limited to the core-known `identity` equivalence, and saved plans bind
+plugin package, API, build-integrity, and schema versions.
+
+The CLI imports only modules listed in `.astrc.json` or an explicit `--config`
+file:
+
+```json
+{
+  "plugins": [{
+    "specifier": "./plugins/example.mjs",
+    "name": "@example/ast-plugin",
+    "powers": ["resource:read"],
+    "aliases": {
+      "namespaces": { "ex": "example" },
+      "sources": { "demo": "example::source" }
+    }
+  }]
+}
+```
+
+Available powers distinguish resource, filesystem, and network read/write;
+process execution; credential reads; and native-module loading. Missing
+approval rejects registration. This is an allowlist for trusted code, not a
+sandbox: importing the module executes its top-level JavaScript with the full
+authority of the Node.js process. The self-declared integrity identifier must
+change with the plugin build and prevents silent saved-plan replay with a
+different declared implementation, but it does not attest module bytes.
+`ast plugins` reports this boundary as `trustedCode: true` and `isolated: false`.
 
 ## CLI
 

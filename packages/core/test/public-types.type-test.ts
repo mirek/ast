@@ -14,6 +14,10 @@ import type {
   TypeScriptChange,
   NodeSnapshot,
   PlanningCapability,
+  PluginManifest,
+  PluginPolicy,
+  PluginPower,
+  PluginRegistry,
   ReadCapability,
 } from "../src/index.js";
 import {
@@ -32,6 +36,7 @@ import {
   mountTypeScript,
   planOperations,
   project,
+  registerPlugins,
 } from "../src/index.js";
 
 const syntheticNode: NodeSnapshot = {
@@ -151,3 +156,21 @@ void typeScriptKind;
 const compatibility: AdapterCompatibility = adapterCompatibility(typescript);
 const contractVersion: "1" = compatibility.contractVersion;
 void contractVersion;
+
+const pluginPower: PluginPower = "filesystem:read";
+const pluginManifest: PluginManifest = {
+  apiVersion: "1",
+  name: "@example/plugin",
+  version: "1.0.0",
+  integrity: "sha256:build",
+  namespaces: ["example"],
+  powers: [pluginPower],
+  contributions: {
+    adapters: [], schemas: [], resolvers: [], mounts: [], operations: [],
+    predicates: [], functions: [], renderers: [], diffProviders: [], optimizerRules: [],
+  },
+};
+void pluginManifest;
+const pluginPolicy: PluginPolicy = { allow: [] };
+const pluginRegistry: PluginRegistry = registerPlugins([], pluginPolicy);
+void pluginRegistry;

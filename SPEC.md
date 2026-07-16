@@ -800,7 +800,18 @@ default.
 
 ## 14. Plugins
 
-A plugin package MAY contribute:
+A JavaScript or TypeScript plugin module exports a plugin object as its default
+export or named `plugin` export. Its immutable manifest contains:
+
+- plugin API version, package name, semantic version, and a build-integrity
+  identifier;
+- every globally unique namespace owned by the package;
+- required powers;
+- exact contribution-name lists for adapters, dynamic schemas, source
+  resolvers, mounts, operations, predicates, scalar functions, renderers, diff
+  providers, and optimizer rules.
+
+The corresponding contribution object MAY provide:
 
 - one or more adapters;
 - node and operation schemas;
@@ -810,16 +821,35 @@ A plugin package MAY contribute:
 - renderers and diff providers;
 - optimizer rules limited to declared logical equivalences.
 
-Plugins MUST use globally unique namespaces. Package names are recommended as
-the namespace authority, with shorter aliases configured by the user.
+Every contribution name is namespace-owned. Runtime-loaded schemas MUST declare
+`dynamic: true`, pass the normal schema validation, and exactly match the schema
+carried by their adapter. Manifest lists and actual contributions MUST match.
+Duplicate package names, namespaces, contribution names, reserved built-in
+namespaces, or aliases fail registration before any contribution is used.
 
-Plugins declare required capabilities such as filesystem access, network
-access, process execution, credentials, and native modules. Capability approval
-and strong isolation are later runtime concerns, but the manifest format MUST
-represent them from the beginning.
+The initial optimizer extension surface accepts only the closed `identity`
+equivalence and no executable rewrite callback. More equivalences require core
+definitions that preserve bag semantics, ordering, captures, cancellation, and
+errors; a plugin cannot merely assert that an arbitrary rewrite is safe.
 
-Plugin APIs follow semantic versioning. Plans record the plugin versions that
-created them.
+Plugin policy contains an explicit package allowlist, approved powers per
+package, reserved host namespaces, and optional aliases. Aliases are configured
+separately for namespaces, sources, mounts, operations, predicates, functions,
+renderers, and diff providers. The textual DSL consumes explicit source, mount,
+and operation aliases; canonical contribution identity remains namespaced.
+
+Required powers distinguish resource read/write, filesystem read/write, network
+read/write, process execution, credential reads, and native-module loading.
+Registration rejects a plugin when any declared power is unapproved. This is
+admission policy for trusted code, not operating-system enforcement: plugin code
+can perform any action available to the hosting Node.js process.
+
+Plugin APIs and package versions follow semantic versioning. Plans record the
+plugin API version, package version, build-integrity identifier, adapter
+namespace, and schema version that created each plugin-owned change. Deserialize
+and apply reject any mismatch. Build integrity is declared by trusted plugin
+code and detects identity drift; it is not independent attestation of module
+bytes.
 
 ## 15. Diagnostics and observability
 
@@ -864,9 +894,13 @@ The runtime MUST:
 - identify external process and network effects in plans;
 - permit policy checks before plan application.
 
-Running arbitrary JavaScript plugins is equivalent to running code. Until an
-isolation mechanism exists, the CLI MUST state this trust boundary clearly and
-SHOULD support an allowlist.
+Running arbitrary JavaScript plugins is equivalent to running code. The CLI
+imports only modules explicitly listed in configuration with an expected
+package name, approved powers, and aliases, then validates their manifests
+before using contributions. Module top-level code necessarily runs during
+import, before its exported manifest can be checked. `ast plugins` reports
+external modules as trusted and not isolated. No sandbox, power-level syscall
+enforcement, credential broker, or module-byte attestation currently exists.
 
 ## 17. Initial scope
 

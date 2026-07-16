@@ -3,12 +3,13 @@ import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 
 const execute = promisify(execFile);
 const cli = fileURLToPath(new URL("../dist/bin.js", import.meta.url));
+const core = fileURLToPath(new URL("../../core/dist/index.js", import.meta.url));
 
 const fixture = async (run) => {
   const root = await mkdtemp(join(tmpdir(), "ast-cli-"));
@@ -133,6 +134,45 @@ test("configuration precedence and usage exit codes are deterministic", async ()
     assert.equal(flagPretty.stdout.includes('"type":"data"'), false);
     const usage = await run(["unknown"]);
     assert.equal(usage.code, 1);
+  }));
+
+test("explicitly allowlisted plugins load as trusted code and enforce powers before use", async () =>
+  fixture(async (root) => {
+    const plugin = join(root, "plugin.mjs");
+    const config = join(root, "plugins.json");
+    await writeFile(plugin, [
+      `import { fromAdapter } from ${JSON.stringify(pathToFileURL(core).href)};`,
+      "const schema = { namespace: 'example', version: '1.0.0', dynamic: true, kinds: [{ kind: 'example::item', attributes: { index: { scalar: 'number', cardinality: 'one', required: true } }, identity: { stability: 'observation', description: 'Fixture item index.' } }], edges: [], operations: [], treeViews: [{ name: 'example::tree', rootKinds: ['example::item'], childEdges: [], default: true }], capabilities: { traversal: ['tree'], pushdown: [], ordering: 'stable', revisions: false, transactions: 'none' } };",
+      "const adapter = { contractVersion: '1', namespace: 'example', schema, read: { open: async (source) => ({ resource: { id: 'fixture', adapter: 'example', uri: source.uri }, close: async () => {} }), roots: async function* (resource) { for (let index = 0; index < 3; index += 1) yield { id: { adapter: 'example', resource: resource.id, local: String(index) }, kind: 'example::item', attributes: { index } }; }, edges: async function* () {}, hydrate: async () => [] } };",
+      "export default {",
+      "  manifest: { apiVersion: '1', name: '@example/ast-plugin', version: '1.0.0', integrity: 'sha256:fixture-1', namespaces: ['example'], powers: ['resource:read'], contributions: { adapters: ['example'], schemas: ['example'], resolvers: ['example::source'], mounts: [], operations: [], predicates: [], functions: [], renderers: [], diffProviders: [], optimizerRules: [] } },",
+      "  contributions: { adapters: [adapter], schemas: [schema], resolvers: [{ name: 'example::source', adapter, open: () => fromAdapter(adapter, { uri: 'example:fixture' }) }] },",
+      "};",
+    ].join("\n"));
+    const entry = {
+      specifier: plugin,
+      name: "@example/ast-plugin",
+      powers: ["resource:read"],
+      aliases: { namespaces: { ex: "example" }, sources: { demo: "example::source" } },
+    };
+    await writeFile(config, JSON.stringify({ format: "jsonl", plugins: [entry] }));
+
+    const listed = await run(["plugins", "--config", config]);
+    assert.equal(listed.code, 0);
+    const pluginRow = JSON.parse(listed.stdout).find(({ namespace }) => namespace === "example");
+    assert.equal(pluginRow.plugin.name, "@example/ast-plugin");
+    assert.equal(pluginRow.trustedCode, true);
+    assert.equal(pluginRow.isolated, false);
+    const queried = await run(["query", "from demo() | count", "--config", config]);
+    assert.equal(queried.code, 0);
+    assert.equal(JSON.parse(queried.stdout).value, 3);
+    const schema = await run(["schema", "ex", "--config", config]);
+    assert.equal(JSON.parse(schema.stdout).namespace, "example");
+
+    await writeFile(config, JSON.stringify({ plugins: [{ ...entry, powers: [] }] }));
+    const unauthorized = await run(["plugins", "--config", config]);
+    assert.equal(unauthorized.code, 2);
+    assert.match(unauthorized.stderr, /plugin\.unauthorized-power/);
   }));
 
 test("an already-aborted invocation returns the cancellation exit code", async () => {

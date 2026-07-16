@@ -1,8 +1,10 @@
 import { readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   DslError,
+  PluginError,
   adapterCompatibility,
   applyChangePlan,
   compileDsl,
@@ -25,6 +27,7 @@ import {
   mountMarkdown,
   mountTypeScript,
   renderChangePlan,
+  registerPlugins,
   serializeChangePlan,
   typeScriptRenameSymbol,
   typeScriptReplaceCall,
@@ -36,6 +39,10 @@ import type {
   DslEnvironment,
   JsonValue,
   NodeSnapshot,
+  PluginAliases,
+  PluginModule,
+  PluginPower,
+  PluginRegistry,
 } from "@mirek/ast";
 
 export interface CliIo {
@@ -73,6 +80,20 @@ interface ParsedArguments {
 interface CliConfig {
   readonly format?: "jsonl" | "pretty";
   readonly color?: "auto" | "always" | "never";
+  readonly plugins?: readonly CliPluginConfig[];
+}
+
+interface CliPluginConfig {
+  readonly specifier: string;
+  readonly name: string;
+  readonly powers?: readonly PluginPower[];
+  readonly aliases?: PluginAliases;
+}
+
+interface ResolvedCliConfig {
+  readonly format: "jsonl" | "pretty";
+  readonly color: "auto" | "always" | "never";
+  readonly plugins: readonly CliPluginConfig[];
 }
 
 const usage = "Usage: ast <query|plan|apply|explain|schema|plugins> [program-or-name] [options]\n";
@@ -110,7 +131,7 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
   return { command, positional, ...(format === undefined ? {} : { format }), ...(color === undefined ? {} : { color }), ...(config === undefined ? {} : { config }), ...(save === undefined ? {} : { save }), yes, allowDestructive, allowIrreversible };
 };
 
-const loadConfig = async (parsed: ParsedArguments, io: CliIo): Promise<Required<CliConfig>> => {
+const loadConfig = async (parsed: ParsedArguments, io: CliIo): Promise<ResolvedCliConfig> => {
   const path = resolve(io.cwd, parsed.config ?? ".astrc.json");
   let file: CliConfig = {};
   try {
@@ -122,7 +143,8 @@ const loadConfig = async (parsed: ParsedArguments, io: CliIo): Promise<Required<
   const environmentColor = io.env.NO_COLOR !== undefined ? "never" : io.env.AST_COLOR;
   const format = parsed.format ?? (environmentFormat === "jsonl" || environmentFormat === "pretty" ? environmentFormat : undefined) ?? file.format ?? (io.stdoutIsTTY ? "pretty" : "jsonl");
   const color = parsed.color ?? (environmentColor === "auto" || environmentColor === "always" || environmentColor === "never" ? environmentColor : undefined) ?? file.color ?? "auto";
-  return { format, color };
+  if (file.plugins !== undefined && !Array.isArray(file.plugins)) throw new TypeError("CLI plugins configuration must be an array.");
+  return { format, color, plugins: file.plugins ?? [] };
 };
 
 const secret = /(?:password|passwd|secret|token|credential|api[-_]?key)/iu;
@@ -144,38 +166,99 @@ const emit = (io: CliIo, format: "jsonl" | "pretty", value: unknown, type = "dat
 };
 const emitDiagnostic = (io: CliIo, value: Diagnostic): void => { io.stderr.write(line({ type: "diagnostic", value })); };
 
-const createRuntime = () => {
+const mergeAliases = (entries: readonly CliPluginConfig[]): PluginAliases => {
+  const categories = ["namespaces", "sources", "mounts", "operations", "predicates", "functions", "renderers", "diffProviders"] as const;
+  const merged: Record<string, Record<string, string>> = Object.create(null) as Record<string, Record<string, string>>;
+  for (const category of categories) {
+    const values: Record<string, string> = Object.create(null) as Record<string, string>;
+    for (const entry of entries) for (const [alias, target] of Object.entries(entry.aliases?.[category] ?? {})) {
+      if (values[alias] !== undefined) throw new PluginError("plugin.duplicate-alias", `Plugin alias ${alias} is configured more than once for ${category}.`);
+      values[alias] = target;
+    }
+    merged[category] = values;
+  }
+  return merged as PluginAliases;
+};
+
+const loadPlugins = async (
+  entries: readonly CliPluginConfig[],
+  cwd: string,
+  reservedNamespaces: readonly string[],
+): Promise<PluginRegistry> => {
+  const modules: PluginModule[] = [];
+  for (const entry of entries) {
+    if (typeof entry.specifier !== "string" || entry.specifier.length === 0 || typeof entry.name !== "string" || entry.name.length === 0) {
+      throw new PluginError("plugin.invalid-config", "Every configured plugin requires a specifier and expected package name.");
+    }
+    const specifier = isAbsolute(entry.specifier) || entry.specifier.startsWith(".")
+      ? pathToFileURL(resolve(cwd, entry.specifier)).href
+      : entry.specifier;
+    let loaded: { readonly default?: unknown; readonly plugin?: unknown };
+    try {
+      // Importing executes trusted JavaScript. Policy validation happens before any contribution is used.
+      // oxlint-disable-next-line no-await-in-loop
+      loaded = await import(specifier) as { readonly default?: unknown; readonly plugin?: unknown };
+    } catch (error) {
+      throw new PluginError("plugin.load-failed", `Could not load configured plugin ${entry.name}.`, { cause: error });
+    }
+    const candidate = loaded.default ?? loaded.plugin;
+    if (candidate === null || typeof candidate !== "object") throw new PluginError("plugin.invalid-module", `Plugin module ${entry.specifier} does not export a plugin object.`);
+    modules.push(candidate as PluginModule);
+  }
+  return registerPlugins(modules, {
+    allow: entries.map(({ name }) => name),
+    powers: Object.fromEntries(entries.map(({ name, powers }) => [name, powers ?? []])),
+    aliases: mergeAliases(entries),
+    reservedNamespaces,
+  });
+};
+
+const mergeEnvironment = <T>(label: string, builtIn: Readonly<Record<string, T>>, plugin: Readonly<Record<string, T>>): Readonly<Record<string, T>> => {
+  for (const name of Object.keys(plugin)) if (builtIn[name] !== undefined) throw new PluginError("plugin.duplicate-alias", `Plugin ${label} alias ${name} conflicts with a built-in.`);
+  return Object.freeze({ ...builtIn, ...plugin });
+};
+
+const createRuntime = async (config: ResolvedCliConfig, cwd: string) => {
   const filesystem = createFilesystemAdapter();
   const json = createJsonAdapter();
   const markdown = createMarkdownAdapter({ json });
   const typescript = createTypeScriptAdapter();
-  const adapters: readonly Adapter[] = [filesystem, json, markdown, typescript];
-  const environment: DslEnvironment = {
-    sources: {
-      fs: { adapter: filesystem, open: (args) => fromFilesystem(filesystem, { uri: String(args[0] ?? ".") }) },
-      json: { adapter: json, open: (args) => fromAdapter(json, { uri: String(args[0] ?? "") }) },
-      markdown: { adapter: markdown, open: (args) => fromAdapter(markdown, { uri: String(args[0] ?? "") }) },
-      ts: { adapter: typescript, open: (args) => fromAdapter(typescript, { uri: String(args[0] ?? "") }) },
-    },
-    mounts: {
-      json: { adapter: json, mount: (query) => mountJson(query, json) },
-      markdown: { adapter: markdown, mount: (query) => mountMarkdown(query, markdown) },
-      ts: { adapter: typescript, mount: (query) => mountTypeScript(query, typescript) },
-    },
-    operations: {
-      "fs::write": { adapter: filesystem, create: (target, args) => filesystemWrite(target.snapshot, { encoding: "utf8", content: String(args.content ?? "") }) },
-      "json::replace-value": { adapter: json, create: (target, args) => jsonReplaceValue(target.snapshot, args.value as JsonValue) },
-      "json::insert-property": { adapter: json, create: (target, args) => jsonInsertProperty(target.snapshot, String(args.name ?? ""), args.value as JsonValue) },
-      "json::remove-property": { adapter: json, create: (target) => jsonRemoveProperty(target.snapshot) },
-      "json::insert-array-item": { adapter: json, create: (target, args) => jsonInsertArrayItem(target.snapshot, Number(args.index), args.value as JsonValue) },
-      "json::remove-array-item": { adapter: json, create: (target) => jsonRemoveArrayItem(target.snapshot) },
-      "markdown::set-heading": { adapter: markdown, create: (target, args) => markdownSetHeading(target.snapshot, String(args.title ?? "")) },
-      "markdown::replace-section": { adapter: markdown, create: (target, args) => markdownReplaceSection(target.snapshot, String(args.content ?? "")) },
-      "ts::rename-symbol": { adapter: typescript, create: (target, args) => typeScriptRenameSymbol(target.snapshot, String(args.name ?? "")) },
-      "ts::replace-call": { adapter: typescript, create: (target, args) => typeScriptReplaceCall(target.snapshot, String(args.callee ?? "")) },
-    },
+  const builtInAdapters: readonly Adapter[] = [filesystem, json, markdown, typescript];
+  const plugins = await loadPlugins(config.plugins, cwd, builtInAdapters.map(({ namespace }) => namespace));
+  const adapters: readonly Adapter[] = Object.freeze([...builtInAdapters, ...plugins.adapters]);
+  const builtInSources: DslEnvironment["sources"] = {
+    fs: { adapter: filesystem, open: (args) => fromFilesystem(filesystem, { uri: String(args[0] ?? ".") }) },
+    json: { adapter: json, open: (args) => fromAdapter(json, { uri: String(args[0] ?? "") }) },
+    markdown: { adapter: markdown, open: (args) => fromAdapter(markdown, { uri: String(args[0] ?? "") }) },
+    ts: { adapter: typescript, open: (args) => fromAdapter(typescript, { uri: String(args[0] ?? "") }) },
   };
-  return { adapters, environment };
+  const builtInMounts: NonNullable<DslEnvironment["mounts"]> = {
+    json: { adapter: json, mount: (query) => mountJson(query, json) },
+    markdown: { adapter: markdown, mount: (query) => mountMarkdown(query, markdown) },
+    ts: { adapter: typescript, mount: (query) => mountTypeScript(query, typescript) },
+  };
+  const builtInOperations: NonNullable<DslEnvironment["operations"]> = {
+    "fs::write": { adapter: filesystem, create: (target, args) => filesystemWrite(target.snapshot, { encoding: "utf8", content: String(args.content ?? "") }) },
+    "json::replace-value": { adapter: json, create: (target, args) => jsonReplaceValue(target.snapshot, args.value as JsonValue) },
+    "json::insert-property": { adapter: json, create: (target, args) => jsonInsertProperty(target.snapshot, String(args.name ?? ""), args.value as JsonValue) },
+    "json::remove-property": { adapter: json, create: (target) => jsonRemoveProperty(target.snapshot) },
+    "json::insert-array-item": { adapter: json, create: (target, args) => jsonInsertArrayItem(target.snapshot, Number(args.index), args.value as JsonValue) },
+    "json::remove-array-item": { adapter: json, create: (target) => jsonRemoveArrayItem(target.snapshot) },
+    "markdown::set-heading": { adapter: markdown, create: (target, args) => markdownSetHeading(target.snapshot, String(args.title ?? "")) },
+    "markdown::replace-section": { adapter: markdown, create: (target, args) => markdownReplaceSection(target.snapshot, String(args.content ?? "")) },
+    "ts::rename-symbol": { adapter: typescript, create: (target, args) => typeScriptRenameSymbol(target.snapshot, String(args.name ?? "")) },
+    "ts::replace-call": { adapter: typescript, create: (target, args) => typeScriptReplaceCall(target.snapshot, String(args.callee ?? "")) },
+  };
+  const environment: DslEnvironment = {
+    sources: mergeEnvironment("source", builtInSources, plugins.dslEnvironment.sources),
+    mounts: mergeEnvironment("mount", builtInMounts, plugins.dslEnvironment.mounts ?? {}),
+    operations: mergeEnvironment("operation", builtInOperations, plugins.dslEnvironment.operations ?? {}),
+  };
+  const schemas = Object.freeze(Object.fromEntries([
+    ...builtInAdapters.map((adapter) => [adapter.namespace, adapter.schema] as const),
+    ...Object.entries(plugins.schemas),
+  ]));
+  return { adapters, environment, plugins, schemas };
 };
 
 const inputText = async (value: string, cwd: string): Promise<string> => {
@@ -190,16 +273,19 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
     const parsed = parseArguments(args);
     if (!["query", "plan", "apply", "explain", "schema", "plugins"].includes(parsed.command)) { io.stderr.write(usage); return EXIT.usage; }
     const config = await loadConfig(parsed, io);
-    const runtime = createRuntime();
+    const runtime = await createRuntime(config, io.cwd);
     if (parsed.command === "schema") {
-      const namespace = parsed.positional[0];
-      const adapter = runtime.adapters.find((value) => value.namespace === namespace);
-      if (adapter === undefined) throw new TypeError(`Unknown adapter namespace ${JSON.stringify(namespace)}.`);
-      io.stdout.write(`${JSON.stringify(serializable(adapter.schema), undefined, config.format === "pretty" ? 2 : undefined)}\n`);
+      const requested = parsed.positional[0];
+      const namespace = requested === undefined ? undefined : runtime.plugins.aliases.namespaces[requested] ?? requested;
+      const schema = namespace === undefined ? undefined : runtime.schemas[namespace];
+      if (schema === undefined) throw new TypeError(`Unknown adapter namespace ${JSON.stringify(requested)}.`);
+      io.stdout.write(`${JSON.stringify(serializable(schema), undefined, config.format === "pretty" ? 2 : undefined)}\n`);
       return EXIT.success;
     }
     if (parsed.command === "plugins") {
-      const values = runtime.adapters.map((adapter) => ({ ...adapterCompatibility(adapter), builtIn: true }));
+      const values = runtime.adapters.map((adapter) => adapter.plugin === undefined
+        ? { ...adapterCompatibility(adapter), builtIn: true }
+        : { ...adapterCompatibility(adapter), builtIn: false, plugin: adapter.plugin, trustedCode: true, isolated: false });
       io.stdout.write(`${JSON.stringify(values, undefined, config.format === "pretty" ? 2 : undefined)}\n`);
       return EXIT.success;
     }
@@ -267,6 +353,7 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
   } catch (error) {
     if (io.signal?.aborted === true || (error instanceof Error && error.name === "AbortError")) return EXIT.cancelled;
     if (error instanceof DslError) for (const value of error.diagnostics) emitDiagnostic(io, value);
+    else if (error instanceof PluginError) io.stderr.write(line({ type: "diagnostic", value: { code: error.code, severity: "error", message: error.message } }));
     else io.stderr.write(line({ type: "diagnostic", value: { code: "cli.error", severity: "error", message: error instanceof Error ? error.message : "Unknown CLI failure." } }));
     return EXIT.diagnostic;
   }
