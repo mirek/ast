@@ -5,7 +5,6 @@ unless a prototype is explicitly intended to answer an earlier design question.
 When a task is complete, delete both its file and this index entry rather than
 marking it completed.
 
-- [Textual DSL](./todo/textual-dsl.md) — compile a compact pipeline language into the proven TypeScript query algebra.
 - [CLI](./todo/cli.md) — expose query, plan, apply, explain, schema, and plugin workflows safely.
 - [Plugin loading and policy](./todo/plugin-loading-and-policy.md) — define manifests, schema discovery, versioning, permissions, and trust boundaries.
 - [SQL adapter prototype](./todo/sql-adapter-prototype.md) — pressure-test pushdown, joins, transactions, and abstraction limits.

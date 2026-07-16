@@ -1026,13 +1026,27 @@ export const select = (
   selector: string | SelectorProgram,
   options: SelectorOptions = {},
 ): Query<NavigableNodeHandle, CaptureMap> => {
-  const program = typeof selector === "string" ? parseSelector(selector, options) : selector;
-  validateSelector(program, adapter.schema);
   const selectedSource: SourceDescriptor = options.treeView === undefined
     ? source
     : { ...source, treeView: options.treeView };
-  const roots = (fromAdapter(adapter, selectedSource) as Query<NavigableNodeHandle, CaptureMap>).traverse({
-    edgeNames: childEdges(adapter.schema, options.treeView),
+  return selectFrom(
+    fromAdapter(adapter, selectedSource) as Query<NavigableNodeHandle, CaptureMap>,
+    adapter.schema,
+    selector,
+    options,
+  );
+};
+
+export const selectFrom = (
+  source: Query<NavigableNodeHandle, CaptureMap>,
+  schema: AdapterSchema,
+  selector: string | SelectorProgram,
+  options: SelectorOptions = {},
+): Query<NavigableNodeHandle, CaptureMap> => {
+  const program = typeof selector === "string" ? parseSelector(selector, options) : selector;
+  validateSelector(program, schema);
+  const roots = source.traverse({
+    edgeNames: childEdges(schema, options.treeView),
     roles: ["child"],
     maxDepth: Number.MAX_SAFE_INTEGER,
     includeSelf: true,
@@ -1040,5 +1054,5 @@ export const select = (
   const sequence = program.selectors[0];
   return sequence === undefined
     ? roots.take(0)
-    : compileSequence(roots, sequence, adapter.schema, options.treeView);
+    : compileSequence(roots, sequence, schema, options.treeView);
 };
