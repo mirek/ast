@@ -7,8 +7,8 @@ code, documents, and databases.
 The repository contains the architecture specification, implementation backlog,
 and a buildable TypeScript monorepo. `@mirek/ast` provides immutable graph,
 resource, schema, diagnostic, and capability contracts plus an executable lazy
-query algebra, selector compiler, and local filesystem adapter. The CLI is not
-yet implemented.
+query algebra, selector compiler, local filesystem adapter, and lazily mounted
+JSON document adapter. The CLI is not yet implemented.
 
 Read [SPEC.md](./SPEC.md) for the architecture and [TODO.md](./TODO.md) for the
 ordered set of work that remains.
@@ -18,8 +18,8 @@ ordered set of work that remains.
 - `@mirek/ast` — pure graph, adapter, query, and change-planning library; its
   model, schema, lazy query runtime, explain plans, and in-memory adapter are
   available now, together with selector parsing, schema validation, and query
-  compilation; the filesystem adapter provides lazy reads and pure change
-  planning
+  compilation; the filesystem and JSON adapters provide lazy reads, nested
+  mounts, and pure change planning
 - `@mirek/ast-cli` — CLI boundary reserved for later implementation
 
 Both packages remain private until their public names and contracts are
@@ -100,6 +100,41 @@ console.log(files.explain().physical.details.pushdown);
 does not touch the filesystem. UTF-8 and binary content are distinguished by
 explicit `utf8` and `base64` encodings. Applying plans is intentionally deferred
 to the change-plan runtime.
+
+## JSON adapter and mounts
+
+`createJsonAdapter` exposes roots, objects, properties, arrays, indices, and
+scalar values in deterministic source order. `mountJson` wraps a filesystem
+query without reading file contents. Bytes are read only if traversal requests
+the `json::mount` child edge; the mounted root has a `json::container` reference
+edge back to its owning `fs::file`.
+
+```ts
+import {
+  createFilesystemAdapter,
+  createJsonAdapter,
+  fromFilesystem,
+  mountJson,
+} from "@mirek/ast";
+
+const manifests = fromFilesystem(createFilesystemAdapter(), {
+  uri: ".",
+  include: ["**/package.json"],
+  kinds: ["fs::file"],
+});
+const graph = mountJson(manifests, createJsonAdapter());
+const nodes = await graph
+  .traverse({ roles: ["child"], maxDepth: 8, includeSelf: true })
+  .toArray({ signal });
+```
+
+Invalid JSON mounts are skipped by default with source-ranged diagnostics, so
+other files remain queryable; `{ onError: "throw" }` selects fail-fast behavior.
+UTF-8 BOM and final-newline style are observed explicitly. Value replacement,
+property insertion/removal, and array insertion/removal produce revision-guarded
+localized text-patch changes without touching the source. Unchanged values
+retain the original bytes; structured replacements use the observed indentation
+where practical and report the formatting strategy in the change payload.
 
 ## Development
 

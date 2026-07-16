@@ -45,6 +45,33 @@ export type {
   FilesystemWriteOperation,
 } from "./filesystem.js";
 export {
+  createJsonAdapter,
+  jsonInsertArrayItem,
+  jsonInsertProperty,
+  jsonRemoveArrayItem,
+  jsonRemoveProperty,
+  jsonReplaceValue,
+  mountJson,
+} from "./json.js";
+export type {
+  JsonAdapter,
+  JsonChange,
+  JsonInsertArrayItemOperation,
+  JsonInsertPropertyOperation,
+  JsonMountOptions,
+  JsonNodeKind,
+  JsonOperation,
+  JsonOperationKind,
+  JsonPatchPayload,
+  JsonPrecondition,
+  JsonPrimitive,
+  JsonRemoveArrayItemOperation,
+  JsonRemovePropertyOperation,
+  JsonReplaceValueOperation,
+  JsonStatistics,
+  JsonValue,
+} from "./json.js";
+export {
   assertNamespace,
   assertNamespacedName,
   defineEdge,
