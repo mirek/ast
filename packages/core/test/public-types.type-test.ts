@@ -1,9 +1,11 @@
 import type {
   AdapterSchema,
+  ChangePlan,
   ApplyCapability,
   DynamicAdapterSchema,
   FilesystemChange,
   FilesystemSource,
+  FilesystemWriteOperation,
   JsonChange,
   JsonValue,
   NodeSnapshot,
@@ -12,12 +14,14 @@ import type {
 } from "../src/index.js";
 import {
   capture,
+  applyChangePlan,
   createFilesystemAdapter,
   createJsonAdapter,
   fromFilesystem,
   fromValues,
   jsonReplaceValue,
   mountJson,
+  planOperations,
   project,
 } from "../src/index.js";
 
@@ -99,3 +103,17 @@ const jsonChangeKind:
   | "json::insert-array-item"
   | "json::remove-array-item" = jsonChange.kind;
 void jsonChangeKind;
+
+declare const changePlan: ChangePlan;
+const applyPromise = applyChangePlan(changePlan, [createFilesystemAdapter()]);
+void applyPromise;
+
+declare const filesystemOperation: FilesystemWriteOperation;
+const planned = planOperations([
+  {
+    id: "write",
+    adapter: createFilesystemAdapter(),
+    operation: filesystemOperation,
+  },
+]);
+void planned;

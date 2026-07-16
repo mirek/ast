@@ -1,7 +1,7 @@
 ---
 title: Implement the TypeScript adapter
 summary: Expose syntax containment, symbol references, and a small semantic refactoring surface.
-depends_on: [change-plans-and-local-apply]
+depends_on: []
 spec_sections: [7.2, 7.3, 17.1, 18.3]
 ---
 

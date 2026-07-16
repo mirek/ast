@@ -98,8 +98,8 @@ console.log(files.explain().physical.details.pushdown);
 `filesystemCreate` construct typed intent values. Passing them to
 `filesystem.planning.plan` records exact observed revision preconditions but
 does not touch the filesystem. UTF-8 and binary content are distinguished by
-explicit `utf8` and `base64` encodings. Applying plans is intentionally deferred
-to the change-plan runtime.
+explicit `utf8` and `base64` encodings. Effects occur only when a validated plan
+is passed to the explicit `applyChangePlan` boundary.
 
 ## JSON adapter and mounts
 
@@ -135,6 +135,38 @@ property insertion/removal, and array insertion/removal produce revision-guarded
 localized text-patch changes without touching the source. Unchanged values
 retain the original bytes; structured replacements use the observed indentation
 where practical and report the formatting strategy in the change payload.
+
+## Change plans and explicit apply
+
+`planOperations` composes adapter operations into one immutable plan. It orders
+declared dependencies, detects overlapping source regions, records schema and
+resource identities, and groups changes by their honest transaction boundary.
+Planning and rendering never apply effects.
+
+```ts
+import {
+  applyChangePlan,
+  planOperations,
+  renderChangePlan,
+} from "@mirek/ast";
+
+const plan = await planOperations([
+  { id: "update-manifest", adapter: json, operation },
+]);
+
+console.log(renderChangePlan(plan)); // source content is redacted by default
+const result = await applyChangePlan(plan, [json]);
+```
+
+`serializeChangePlan` and `deserializeChangePlan` preserve adapter schema
+versions, resource identities and revisions, risks, dependencies, and private
+payloads behind an integrity-checked format. Apply revalidates every revision.
+The default failure policy stops after a failed group;
+`continue-independent` may continue only dependency-independent work. Reports
+distinguish failed and skipped groups and state whether partial application
+occurred. JSON document groups use an atomic local replacement. Filesystem
+groups report that rollback and compensation are unavailable rather than
+implying cross-file atomicity.
 
 ## Development
 

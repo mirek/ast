@@ -1,10 +1,21 @@
 import { createHash } from "node:crypto";
-import { readdir, realpath, lstat } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { basename, extname, isAbsolute, matchesGlob, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type {
   Adapter,
+  ApplyCapability,
+  ApplyResult,
   AttributeProjection,
   OpenContext,
   Operation,
@@ -14,6 +25,12 @@ import type {
   RootRequest,
   SourceDescriptor,
 } from "./adapter.js";
+import type {
+  Change,
+  ChangePrecondition,
+  ChangeRegion,
+  TextChangePreview,
+} from "./change.js";
 import { defineDiagnostic } from "./diagnostic.js";
 import type { Diagnostic } from "./diagnostic.js";
 import { defineEdge, defineNodeSnapshot, defineResource } from "./model.js";
@@ -81,22 +98,17 @@ export type FilesystemOperation =
 
 export type FilesystemChangeRisk = "safe" | "destructive";
 
-export interface FilesystemPrecondition {
-  readonly resource: string;
+export interface FilesystemPrecondition extends ChangePrecondition {
   readonly path: string;
-  readonly expectedRevision?: Revision;
-  readonly description: string;
 }
 
-export interface FilesystemChange {
+export interface FilesystemChange extends Change<Readonly<Record<string, unknown>>> {
   readonly adapter: "fs";
-  readonly resource: string;
   readonly kind: FilesystemOperationKind;
   readonly risk: FilesystemChangeRisk;
-  readonly summary: string;
-  readonly reversible: boolean;
-  readonly payload: Readonly<Record<string, unknown>>;
   readonly preconditions: readonly FilesystemPrecondition[];
+  readonly regions: readonly ChangeRegion[];
+  readonly preview?: TextChangePreview;
 }
 
 export interface FilesystemStatistics {
@@ -115,6 +127,7 @@ export interface FilesystemAdapter extends Adapter {
   readonly namespace: "fs";
   readonly read: ReadCapability;
   readonly planning: PlanningCapability<FilesystemOperation, FilesystemChange>;
+  readonly apply: ApplyCapability<FilesystemChange, ApplyResult>;
   walk(source: FilesystemSource, context?: ExecuteOptions): AsyncIterable<NavigableNodeHandle>;
   diagnostics(): readonly Diagnostic[];
   statistics(): FilesystemStatistics;
@@ -757,53 +770,86 @@ export const createFilesystemAdapter = (
         return [];
       }
 
-      const existing = Object.freeze({
+      const targetUri = pathToFileURL(absolutePath(state.root, local)).href;
+      const existing: FilesystemPrecondition = Object.freeze({
         resource: operation.resource,
         path: local,
+        uri: targetUri,
         expectedRevision: revision,
+        expectation: "exists",
         description: "Path must retain its observed filesystem revision.",
       });
+      const resourceFields = {
+        resourceUri: state.resource.uri,
+        ...(state.resource.revision === undefined
+          ? {}
+          : { resourceRevision: state.resource.revision }),
+      };
       let change: FilesystemChange;
       if (operation.kind === "fs::write") {
+        const preview = operation.payload.encoding === "utf8"
+          ? Object.freeze({
+              kind: "text" as const,
+              uri: targetUri,
+              before: await readFile(absolutePath(state.root, local), "utf8"),
+              after: operation.payload.content,
+              sensitive: true,
+            })
+          : undefined;
         change = {
           adapter: "fs",
           resource: operation.resource,
+          ...resourceFields,
           kind: operation.kind,
           risk: "destructive",
           summary: `Write ${local}`,
           reversible: false,
-          payload: Object.freeze({ path: local, ...operation.payload }),
+          payload: Object.freeze({ path: local, uri: targetUri, ...operation.payload }),
           preconditions: [existing],
+          regions: [{ uri: targetUri }],
+          ...(preview === undefined ? {} : { preview }),
         };
       } else if (operation.kind === "fs::move") {
-        absolutePath(state.root, operation.payload.destination);
+        const destinationPath = absolutePath(state.root, operation.payload.destination);
+        const destinationUri = pathToFileURL(destinationPath).href;
         change = {
           adapter: "fs",
           resource: operation.resource,
+          ...resourceFields,
           kind: operation.kind,
           risk: "safe",
           summary: `Move ${local} to ${operation.payload.destination}`,
           reversible: true,
-          payload: Object.freeze({ path: local, destination: operation.payload.destination }),
+          payload: Object.freeze({
+            path: local,
+            uri: targetUri,
+            destination: operation.payload.destination,
+            destinationUri,
+          }),
           preconditions: [
             existing,
             Object.freeze({
               resource: operation.resource,
               path: operation.payload.destination,
+              uri: destinationUri,
+              expectation: "absent",
               description: "Destination path must not exist.",
             }),
           ],
+          regions: [{ uri: targetUri }, { uri: destinationUri }],
         };
       } else if (operation.kind === "fs::remove") {
         change = {
           adapter: "fs",
           resource: operation.resource,
+          ...resourceFields,
           kind: operation.kind,
           risk: "destructive",
           summary: `Remove ${local}`,
           reversible: false,
-          payload: Object.freeze({ path: local }),
+          payload: Object.freeze({ path: local, uri: targetUri }),
           preconditions: [existing],
+          regions: [{ uri: targetUri }],
         };
       } else {
         if (
@@ -816,30 +862,134 @@ export const createFilesystemAdapter = (
           throw new TypeError("Created filesystem node name must be one path segment.");
         }
         const path = local === "." ? operation.payload.name : `${local}/${operation.payload.name}`;
-        absolutePath(state.root, path);
+        const createdUri = pathToFileURL(absolutePath(state.root, path)).href;
         change = {
           adapter: "fs",
           resource: operation.resource,
+          ...resourceFields,
           kind: operation.kind,
           risk: "safe",
           summary: `Create ${operation.payload.nodeKind} ${path}`,
           reversible: true,
           payload: Object.freeze({
             path,
+            uri: createdUri,
             nodeKind: operation.payload.nodeKind,
             ...operation.payload.content,
           }),
           preconditions: [
-            existing,
+            Object.freeze({
+              resource: operation.resource,
+              path: local,
+              uri: targetUri,
+              expectation: "exists",
+              description: "Parent directory must still exist.",
+            }),
             Object.freeze({
               resource: operation.resource,
               path,
+              uri: createdUri,
+              expectation: "absent",
               description: "Destination path must not exist.",
             }),
           ],
+          regions: [{ uri: createdUri }],
         };
       }
-      return Object.freeze([Object.freeze({ ...change, preconditions: Object.freeze([...change.preconditions]) })]);
+      return Object.freeze([
+        Object.freeze({
+          ...change,
+          preconditions: Object.freeze([...change.preconditions]),
+          regions: Object.freeze([...change.regions]),
+        }),
+      ]);
+    },
+  };
+
+  const revisionAt = async (uri: string): Promise<Revision | undefined> => {
+    try {
+      return revisionOf(await lstat(fileURLToPath(uri)));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  };
+
+  const apply: ApplyCapability<FilesystemChange, ApplyResult> = {
+    async apply(changes, context) {
+      throwIfAborted(context.signal);
+      for (const change of changes) {
+        for (const precondition of change.preconditions) {
+          throwIfAborted(context.signal);
+          // Preconditions are checked before any effect in this adapter call.
+          // oxlint-disable-next-line no-await-in-loop
+          const actual = await revisionAt(precondition.uri);
+          if (precondition.expectation === "absent" ? actual !== undefined : actual === undefined) {
+            throw new Error(`Filesystem precondition failed for ${precondition.uri}.`);
+          }
+          if (
+            precondition.expectedRevision !== undefined &&
+            actual !== precondition.expectedRevision
+          ) {
+            throw new Error(`Filesystem revision changed for ${precondition.uri}.`);
+          }
+        }
+      }
+      let applied = 0;
+      for (const change of changes) {
+        throwIfAborted(context.signal);
+        const uri = change.payload.uri;
+        if (typeof uri !== "string") throw new TypeError("Filesystem change URI is missing.");
+        const path = fileURLToPath(uri);
+        if (change.kind === "fs::write") {
+          const encoding = change.payload.encoding;
+          const content = change.payload.content;
+          if (
+            (encoding !== "utf8" && encoding !== "base64") ||
+            typeof content !== "string"
+          ) {
+            throw new TypeError("Filesystem write payload is invalid.");
+          }
+          // oxlint-disable-next-line no-await-in-loop
+          await writeFile(path, encoding === "utf8" ? content : Buffer.from(content, "base64"));
+        } else if (change.kind === "fs::move") {
+          const destinationUri = change.payload.destinationUri;
+          if (typeof destinationUri !== "string") {
+            throw new TypeError("Filesystem move destination URI is missing.");
+          }
+          // oxlint-disable-next-line no-await-in-loop
+          await rename(path, fileURLToPath(destinationUri));
+        } else if (change.kind === "fs::remove") {
+          // oxlint-disable-next-line no-await-in-loop
+          await rm(path, { recursive: true });
+        } else {
+          if (change.payload.nodeKind === "directory") {
+            // oxlint-disable-next-line no-await-in-loop
+            await mkdir(path);
+          } else {
+            const encoding = change.payload.encoding;
+            const content = change.payload.content;
+            if (encoding === undefined && content === undefined) {
+              // oxlint-disable-next-line no-await-in-loop
+              await writeFile(path, "", { flag: "wx" });
+            } else if (
+              (encoding === "utf8" || encoding === "base64") &&
+              typeof content === "string"
+            ) {
+              // oxlint-disable-next-line no-await-in-loop
+              await writeFile(
+                path,
+                encoding === "utf8" ? content : Buffer.from(content, "base64"),
+                { flag: "wx" },
+              );
+            } else {
+              throw new TypeError("Filesystem create payload is invalid.");
+            }
+          }
+        }
+        applied += 1;
+      }
+      return Object.freeze({ applied, diagnostics: Object.freeze([]) });
     },
   };
 
@@ -848,6 +998,7 @@ export const createFilesystemAdapter = (
     schema,
     read,
     planning,
+    apply,
     walk(source, context = {}) {
       validateSource(source);
       const exclude = Object.freeze([...(source.exclude ?? [])]);
