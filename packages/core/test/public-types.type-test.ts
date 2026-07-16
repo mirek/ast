@@ -2,11 +2,19 @@ import type {
   AdapterSchema,
   ApplyCapability,
   DynamicAdapterSchema,
+  FilesystemChange,
+  FilesystemSource,
   NodeSnapshot,
   PlanningCapability,
   ReadCapability,
 } from "../src/index.js";
-import { capture, fromValues, project } from "../src/index.js";
+import {
+  capture,
+  createFilesystemAdapter,
+  fromFilesystem,
+  fromValues,
+  project,
+} from "../src/index.js";
 
 const syntheticNode: NodeSnapshot = {
   id: { adapter: "memory", resource: "fixture", local: "derived" },
@@ -55,3 +63,16 @@ project(fromValues([1, 2]), (value, captures) => {
   // @ts-expect-error captures enter scope only after an explicit capture operator
   return value + captures.original;
 });
+
+const filesystemSource: FilesystemSource = {
+  uri: ".",
+  include: ["**/*.ts"],
+  kinds: ["fs::file"],
+};
+const filesystemQuery = fromFilesystem(createFilesystemAdapter(), filesystemSource);
+void filesystemQuery;
+
+declare const filesystemChange: FilesystemChange;
+const filesystemChangeKind: "fs::write" | "fs::move" | "fs::remove" | "fs::create" =
+  filesystemChange.kind;
+void filesystemChangeKind;

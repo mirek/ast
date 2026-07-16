@@ -20,6 +20,31 @@ export type {
   DiagnosticSeverity,
 } from "./diagnostic.js";
 export {
+  createFilesystemAdapter,
+  filesystemCreate,
+  filesystemMove,
+  filesystemRemove,
+  filesystemWrite,
+  fromFilesystem,
+} from "./filesystem.js";
+export type {
+  FilesystemAdapter,
+  FilesystemAdapterOptions,
+  FilesystemChange,
+  FilesystemChangeRisk,
+  FilesystemContent,
+  FilesystemCreateOperation,
+  FilesystemMoveOperation,
+  FilesystemNodeKind,
+  FilesystemOperation,
+  FilesystemOperationKind,
+  FilesystemPrecondition,
+  FilesystemRemoveOperation,
+  FilesystemSource,
+  FilesystemStatistics,
+  FilesystemWriteOperation,
+} from "./filesystem.js";
+export {
   assertNamespace,
   assertNamespacedName,
   defineEdge,

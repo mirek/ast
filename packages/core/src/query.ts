@@ -94,7 +94,7 @@ interface QueryNode<Value, Captures extends CaptureMap> {
 type ValueSource<Value> =
   | Iterable<Value>
   | AsyncIterable<Value>
-  | (() => Iterable<Value> | AsyncIterable<Value>);
+  | ((options: ExecuteOptions) => Iterable<Value> | AsyncIterable<Value>);
 
 const EMPTY_CAPTURES: EmptyCaptures = Object.freeze({});
 
@@ -631,20 +631,24 @@ export class Query<Value, Captures extends CaptureMap = EmptyCaptures>
 
 export const fromValues = <Value>(
   values: ValueSource<Value>,
-  options: { readonly ordering?: SelectionOrdering; readonly label?: string } = {},
+  options: {
+    readonly ordering?: SelectionOrdering;
+    readonly label?: string;
+    readonly details?: Readonly<Record<string, string | number | boolean>>;
+  } = {},
 ): Query<Value> => {
   const ordering = options.ordering ?? "stable";
   return new Query(
     operatorNode(
       "source",
       ordering,
-      { label: options.label ?? "values" },
+      { label: options.label ?? "values", ...options.details },
       false,
       [],
       new Set(),
       (executeOptions) => ({
         async *[Symbol.asyncIterator]() {
-          const source = typeof values === "function" ? values() : values;
+          const source = typeof values === "function" ? values(executeOptions) : values;
           for await (const value of toAsyncIterable(source)) {
             throwIfAborted(executeOptions.signal);
             yield { value, captures: EMPTY_CAPTURES };

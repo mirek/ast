@@ -7,7 +7,8 @@ code, documents, and databases.
 The repository contains the architecture specification, implementation backlog,
 and a buildable TypeScript monorepo. `@mirek/ast` provides immutable graph,
 resource, schema, diagnostic, and capability contracts plus an executable lazy
-query algebra and selector compiler. The CLI is not yet implemented.
+query algebra, selector compiler, and local filesystem adapter. The CLI is not
+yet implemented.
 
 Read [SPEC.md](./SPEC.md) for the architecture and [TODO.md](./TODO.md) for the
 ordered set of work that remains.
@@ -17,7 +18,8 @@ ordered set of work that remains.
 - `@mirek/ast` — pure graph, adapter, query, and change-planning library; its
   model, schema, lazy query runtime, explain plans, and in-memory adapter are
   available now, together with selector parsing, schema validation, and query
-  compilation
+  compilation; the filesystem adapter provides lazy reads and pure change
+  planning
 - `@mirek/ast-cli` — CLI boundary reserved for later implementation
 
 Both packages remain private until their public names and contracts are
@@ -64,6 +66,40 @@ const calls = select(
 
 const result = await calls.toArray({ signal });
 ```
+
+## Filesystem adapter
+
+`createFilesystemAdapter` exposes directories, files, and symbolic links as a
+stable path-ordered graph. Child traversal never follows symbolic links;
+in-root link targets use the separate `fs::target` reference edge. File bytes
+remain opaque, so querying large or binary files reads metadata rather than
+embedding their contents in node attributes.
+
+`fromFilesystem` walks lazily and pushes include/exclude globs, node kinds,
+sizes, and modification-time bounds into traversal. Its physical explanation
+lists those pushdowns separately from downstream runtime filters.
+
+```ts
+import { createFilesystemAdapter, fromFilesystem, take } from "@mirek/ast";
+
+const filesystem = createFilesystemAdapter({ ignore: [".git/**"] });
+const files = fromFilesystem(filesystem, {
+  uri: ".",
+  include: ["**/*.ts"],
+  kinds: ["fs::file"],
+  maxSize: 1_000_000,
+});
+
+const firstTen = await take(files, 10).toArray({ signal });
+console.log(files.explain().physical.details.pushdown);
+```
+
+`filesystemWrite`, `filesystemMove`, `filesystemRemove`, and
+`filesystemCreate` construct typed intent values. Passing them to
+`filesystem.planning.plan` records exact observed revision preconditions but
+does not touch the filesystem. UTF-8 and binary content are distinguished by
+explicit `utf8` and `base64` encodings. Applying plans is intentionally deferred
+to the change-plan runtime.
 
 ## Development
 
