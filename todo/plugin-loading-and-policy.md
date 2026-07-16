@@ -1,7 +1,7 @@
 ---
 title: Implement plugin loading, manifests, and policy
 summary: Make adapter extensions discoverable and versioned while stating the JavaScript trust boundary precisely.
-depends_on: [stabilize-adapter-contracts, cli]
+depends_on: [cli]
 spec_sections: [14, 16]
 ---
 

@@ -994,6 +994,7 @@ export const createFilesystemAdapter = (
   };
 
   const adapter: FilesystemAdapter = {
+    contractVersion: "1",
     namespace: "fs",
     schema,
     read,

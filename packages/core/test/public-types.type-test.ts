@@ -1,5 +1,6 @@
 import type {
   AdapterSchema,
+  AdapterCompatibility,
   ChangePlan,
   ApplyCapability,
   DynamicAdapterSchema,
@@ -17,6 +18,7 @@ import type {
 } from "../src/index.js";
 import {
   capture,
+  adapterCompatibility,
   applyChangePlan,
   createFilesystemAdapter,
   createJsonAdapter,
@@ -145,3 +147,7 @@ void mountedTypeScript;
 declare const typeScriptChange: TypeScriptChange;
 const typeScriptKind: "ts::rename-symbol" | "ts::replace-call" = typeScriptChange.kind;
 void typeScriptKind;
+
+const compatibility: AdapterCompatibility = adapterCompatibility(typescript);
+const contractVersion: "1" = compatibility.contractVersion;
+void contractVersion;

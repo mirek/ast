@@ -1028,7 +1028,10 @@ export const select = (
 ): Query<NavigableNodeHandle, CaptureMap> => {
   const program = typeof selector === "string" ? parseSelector(selector, options) : selector;
   validateSelector(program, adapter.schema);
-  const roots = (fromAdapter(adapter, source) as Query<NavigableNodeHandle, CaptureMap>).traverse({
+  const selectedSource: SourceDescriptor = options.treeView === undefined
+    ? source
+    : { ...source, treeView: options.treeView };
+  const roots = (fromAdapter(adapter, selectedSource) as Query<NavigableNodeHandle, CaptureMap>).traverse({
     edgeNames: childEdges(adapter.schema, options.treeView),
     roles: ["child"],
     maxDepth: Number.MAX_SAFE_INTEGER,

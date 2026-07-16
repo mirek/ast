@@ -342,11 +342,14 @@ export interface ApplyCapability<Planned = unknown, Result = unknown> {
 }
 
 export interface Adapter {
+  readonly contractVersion: "1";
   readonly namespace: string;
   readonly schema: AdapterSchema;
   readonly read?: ReadCapability;
   readonly planning?: PlanningCapability;
   readonly apply?: ApplyCapability;
+  readonly mount?: MountCapability;
+  readonly diagnostics?: () => readonly Diagnostic[];
 }
 ```
 
@@ -354,6 +357,13 @@ Read, planning, and apply are separate structural capabilities. Possessing a
 read capability never implies permission to plan or apply effects. Native query
 compilation and execution remain provisional extensions to be added only when
 the query runtime and adapter evidence require them.
+
+Contract version 1 stabilizes resource cleanup, roots and tree views, hydration,
+edge reads, planning, explicit apply, diagnostics, and nested mount opening as
+focused capabilities. Tree-view choice is a typed source field. Adapter-specific
+statistics, native query compilation, cost estimation, and watch support remain
+provisional. Validation rejects capability/schema mismatches before execution;
+compatibility requires contract version, namespace, and schema version equality.
 
 ### 7.1 Capabilities
 

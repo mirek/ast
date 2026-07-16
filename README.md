@@ -230,6 +230,15 @@ Out-of-project files are explicitly syntax-only, generated declaration files
 are read-only, and project references are diagnosed as unsupported by the
 initial adapter instead of being loaded incompletely.
 
+## Stable adapter contract
+
+Adapters declare core contract version `1` plus an independent schema version.
+`validateAdapter` rejects capability/schema mismatches before execution, while
+`adapterCompatibility` returns the exact compatibility identity. Read and
+cleanup, tree views, hydration, edges, planning, apply, diagnostics, and nested
+mount opening are stable focused capabilities. Adapter statistics, native query
+compilation, cost estimates, and watching remain provisional.
+
 ## Development
 
 Requires Node.js 24 or newer and pnpm 11 or newer.

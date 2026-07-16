@@ -704,7 +704,10 @@ export const fromAdapter = (
           const handle = await read.open(source, requestSignal);
           try {
             throwIfAborted(options.signal);
-            for await (const snapshot of read.roots(handle.resource, requestSignal)) {
+            for await (const snapshot of read.roots(handle.resource, {
+              ...requestSignal,
+              ...(source.treeView === undefined ? {} : { treeView: source.treeView }),
+            })) {
               throwIfAborted(options.signal);
               yield { value: navigableHandle(read, snapshot), captures: EMPTY_CAPTURES };
             }

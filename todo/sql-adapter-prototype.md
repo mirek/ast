@@ -1,7 +1,7 @@
 ---
 title: Prototype a SQL adapter
 summary: Test whether the graph abstraction remains honest under native query pushdown, joins, transactions, and large unordered data.
-depends_on: [stabilize-adapter-contracts]
+depends_on: []
 spec_sections: [7, 8, 11, 17.3, 18.4, 20]
 ---
 
