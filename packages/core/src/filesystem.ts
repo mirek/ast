@@ -123,6 +123,7 @@ export interface FilesystemAdapter extends Adapter {
 interface ResourceState {
   readonly resource: Resource;
   readonly root: string;
+  readonly canonicalRoot: string;
   readonly exclude: readonly string[];
 }
 
@@ -553,6 +554,7 @@ export const createFilesystemAdapter = (
       throwIfAborted(context.signal);
       const root = sourcePath(source.uri);
       const rootStat = await lstat(root);
+      const canonicalRoot = await realpath(root);
       throwIfAborted(context.signal);
       const sourceExclude = source.options?.exclude;
       const excludes = Array.isArray(sourceExclude)
@@ -565,7 +567,7 @@ export const createFilesystemAdapter = (
         uri: pathToFileURL(root).href,
         revision: revisionOf(rootStat),
       });
-      const state = Object.freeze({ resource, root, exclude });
+      const state = Object.freeze({ resource, root, canonicalRoot, exclude });
       resources.set(resource.id, state);
       statistics.opened += 1;
       let closed = false;
@@ -636,7 +638,7 @@ export const createFilesystemAdapter = (
             try {
               const targetPath = await realpath(path);
               throwIfAborted(request.signal);
-              const local = relative(state.root, targetPath);
+              const local = relative(state.canonicalRoot, targetPath);
               if (local === ".." || local.startsWith(`..${sep}`) || isAbsolute(local)) {
                 diagnostics.push(
                   defineDiagnostic({
@@ -654,7 +656,11 @@ export const createFilesystemAdapter = (
                 );
                 return;
               }
-              const target = await observe(state, targetPath, request.signal);
+              const target = await observe(
+                state,
+                absolutePath(state.root, local),
+                request.signal,
+              );
               if (target !== undefined) {
                 yield defineEdge({
                   name: "fs::target",

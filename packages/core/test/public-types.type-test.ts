@@ -4,6 +4,8 @@ import type {
   DynamicAdapterSchema,
   FilesystemChange,
   FilesystemSource,
+  JsonChange,
+  JsonValue,
   NodeSnapshot,
   PlanningCapability,
   ReadCapability,
@@ -11,8 +13,11 @@ import type {
 import {
   capture,
   createFilesystemAdapter,
+  createJsonAdapter,
   fromFilesystem,
   fromValues,
+  jsonReplaceValue,
+  mountJson,
   project,
 } from "../src/index.js";
 
@@ -76,3 +81,21 @@ declare const filesystemChange: FilesystemChange;
 const filesystemChangeKind: "fs::write" | "fs::move" | "fs::remove" | "fs::create" =
   filesystemChange.kind;
 void filesystemChangeKind;
+
+const jsonValue: JsonValue = { name: "ast", values: [true, null, 1] };
+const json = createJsonAdapter();
+const mountedJson = mountJson(filesystemQuery, json);
+void mountedJson;
+
+declare const jsonNode: NodeSnapshot;
+const jsonOperation = jsonReplaceValue(jsonNode, jsonValue);
+void jsonOperation;
+
+declare const jsonChange: JsonChange;
+const jsonChangeKind:
+  | "json::replace-value"
+  | "json::insert-property"
+  | "json::remove-property"
+  | "json::insert-array-item"
+  | "json::remove-array-item" = jsonChange.kind;
+void jsonChangeKind;

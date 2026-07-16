@@ -364,6 +364,17 @@ An adapter may mount another adapter beneath one of its nodes. For example:
 Mounting MUST preserve a path back to the containing node and the original
 resource provenance.
 
+The proven local JSON mount represents the mount itself as a stable child edge
+from `fs::file` to `json::root`. The root has exactly one child: the parsed JSON
+value. It also exposes a separate `json::container` reference edge back to the
+file, so containment remains acyclic while queries can recover ownership.
+Requesting the mount edge opens and parses the nested resource lazily; merely
+discovering or yielding the file does not read its bytes. The mounted resource
+is owned by that edge traversal, remains available while its descendants are
+consumed, and closes on completion, failure, cancellation, or early return.
+Mounted node identity combines the containing file identity with a source-order
+structural path and is stable only within the observed file revision.
+
 ### 7.3 Adapter-specific operations
 
 Adapters publish typed operations such as:
@@ -758,7 +769,21 @@ The first useful release targets local, version-controlled repositories.
      change-plan runtime.
 2. JSON
    - object, property, array, and scalar nodes;
-   - lossless-enough updates for ordinary JSON files.
+   - an explicit root node whose single child is the document value, with
+     properties and array indices represented as intermediate child nodes;
+   - source-order deterministic traversal, explicit null scalar values, and
+     absence represented by a missing property rather than a synthetic value;
+   - lazy `json::mount` child edges from filesystem files and a
+     `json::container` reference path back to the owning file;
+   - UTF-8 and UTF-8-with-BOM observations with UTF-16 source offsets after the
+     optional BOM, preserving original bytes for no-op edits, final-newline
+     behavior, and unrelated source text for localized edits;
+   - adapter operations for value replacement, property insertion/removal, and
+     array insertion/removal. Planning emits revision-guarded localized text
+     patches and never mutates the file;
+   - invalid syntax produces source-ranged diagnostics. Mount traversal may
+     skip invalid documents so unrelated files remain queryable, or fail under
+     an explicit throw policy.
 3. Markdown
    - document structure, headings, sections, lists, links, code blocks, and
      frontmatter;
@@ -857,19 +882,17 @@ design:
 
 1. Should the canonical selector surface be CSS-derived, XPath-derived, or a
    small relational algebra with selector sugar?
-2. How are mounted adapter roots represented without surprising child and
-   descendant semantics?
-3. Which attributes are guaranteed eagerly available for effective planning?
-4. Should reference traversal use named edge combinators or explicit pipeline
+2. Which attributes are guaranteed eagerly available for effective planning?
+3. Should reference traversal use named edge combinators or explicit pipeline
    operations?
-5. How much schema information can remain serializable while still producing
+4. How much schema information can remain serializable while still producing
    useful TypeScript inference?
-6. What is the smallest operation protocol that supports both text patches and
+5. What is the smallest operation protocol that supports both text patches and
    transactional database changes honestly?
-7. How should plans encode compensation without implying false atomicity?
-8. Which stable node identity strategies work across reparses and formatting?
-9. Where is the boundary between selector functions and arbitrary user code?
-10. Is the textual DSL expression-only, or does it eventually need bindings,
+6. How should plans encode compensation without implying false atomicity?
+7. Which stable node identity strategies work across reparses and formatting?
+8. Where is the boundary between selector functions and arbitrary user code?
+9. Is the textual DSL expression-only, or does it eventually need bindings,
     reusable functions, and modules?
 
 ## 21. Recommended implementation sequence

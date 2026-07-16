@@ -1,7 +1,7 @@
 ---
 title: Implement change plans and explicit local apply
 summary: Convert operations into inspectable changes with diffs, conflicts, dependencies, revisions, risk, and controlled effects.
-depends_on: [json-adapter-and-mounting]
+depends_on: []
 spec_sections: [6.7, 10, 13, 16, 17.2]
 ---
 
@@ -14,6 +14,8 @@ occur only through an explicit apply boundary.
 
 - Define operations, changes, preconditions, risks, transaction groups, and
   adapter-private serializable payloads.
+- Compose the existing filesystem changes and JSON localized text-patch changes
+  into one plan without discarding their adapter-owned payload semantics.
 - Detect overlapping or contradictory source changes and order dependencies.
 - Render textual diffs and summaries without exposing secrets.
 - Revalidate revisions immediately before apply and stop dependent changes after
