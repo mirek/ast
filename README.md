@@ -4,15 +4,15 @@
 runtime for heterogeneous structured resources such as repositories, source
 code, documents, and databases.
 
-The repository contains the architecture specification, implementation backlog,
-and a buildable TypeScript monorepo. `@mirek/ast` provides immutable graph,
-resource, schema, diagnostic, and capability contracts plus an executable lazy
-query algebra, selector compiler, local filesystem adapter, and lazily mounted
-JSON, Markdown, and TypeScript document adapters, textual DSL, change planning,
-and the `ast` CLI.
+The repository contains the validated architecture specification, executable
+conformance suite, and a buildable TypeScript monorepo. `@mirek/ast` provides
+immutable graph, resource, schema, diagnostic, and capability contracts plus an
+executable lazy query algebra, selector compiler, local filesystem adapter, and
+lazily mounted JSON, Markdown, and TypeScript document adapters, textual DSL,
+change planning, and the `ast` CLI.
 
-Read [SPEC.md](./SPEC.md) for the architecture and [TODO.md](./TODO.md) for the
-ordered set of work that remains.
+Read [SPEC.md](./SPEC.md) for the architecture. [TODO.md](./TODO.md) records that
+no implementation work currently remains.
 
 ## Workspace
 
@@ -24,8 +24,8 @@ ordered set of work that remains.
 - `@mirek/ast-cli` — executable boundary for querying, planning, explaining,
   and explicitly applying changes
 
-Both packages remain private until their public names and contracts are
-stabilized.
+Both packages remain private while release naming and versioning are decided;
+the architecture and adapter contract are validated.
 
 ## Query runtime
 
@@ -79,7 +79,9 @@ embedding their contents in node attributes.
 
 `fromFilesystem` walks lazily and pushes include/exclude globs, node kinds,
 sizes, and modification-time bounds into traversal. Its physical explanation
-lists those pushdowns separately from downstream runtime filters.
+lists those pushdowns separately from downstream runtime filters. Statistics
+report resource lifecycle, entries/nodes observed, I/O count, and cumulative
+I/O duration; tests can inject a deterministic clock.
 
 ```ts
 import { createFilesystemAdapter, fromFilesystem, take } from "@mirek/ast";
@@ -355,6 +357,20 @@ confirmation (4), apply failure (5), and cancellation (130). SIGINT propagates
 through query/apply cancellation. Rendered values redact conventional secret,
 token, password, credential, and API-key fields. Explicitly saved plans contain
 private adapter payloads and should be treated as sensitive files.
+
+## Architecture conformance
+
+The public-boundary conformance suite demonstrates one repository query mounting
+JSON and Markdown, one selector engine across filesystem/document/code nodes,
+reference traversal separate from containment, repository-scale early
+termination without buffering, pushdown explanations, cancellation cleanup and
+I/O timing, deterministic cross-format plans, revision-drift rejection,
+adapter-specific operations composed with generic operators, TypeScript/DSL
+logical parity, and diagnostics carrying both program and source-node context.
+
+Focused suites additionally cover adapter contracts, selectors, change-group
+failure policy, plugin admission, SQL parameterization/transactions, and CLI
+automation behavior.
 
 ## Development
 

@@ -1,6 +1,6 @@
 # Unified Node Graph Language and Runtime Specification
 
-Status: Draft 0.1  
+Status: Architecture validated 0.1; package release pending
 Audience: implementers, plugin authors, and users designing structured automation  
 Implementation language: TypeScript  
 
@@ -885,7 +885,9 @@ export interface Diagnostic {
 ```
 
 Locations may reference the DSL program, a source node, an adapter, or a
-specific change.
+specific change. Diagnostics produced while planning a textual DSL operation
+retain adapter-provided node/source locations and add the invoking program span;
+program context never replaces source provenance.
 
 The runtime SHOULD expose:
 
@@ -898,6 +900,13 @@ The runtime SHOULD expose:
 
 Observability MUST avoid logging source contents, credentials, or secrets by
 default.
+
+The current physical plan marks buffering operators and adapter pushdowns.
+Filesystem statistics expose opened/closed resources, directories and entries
+read, nodes observed, I/O operation count, and cumulative I/O duration. The
+clock is injectable for deterministic conformance tests. Repository-scale early
+termination demonstrates a streaming, non-buffering pipeline and balanced
+cleanup under normal return and cancellation.
 
 ## 16. Security model
 
@@ -944,6 +953,9 @@ The first useful release targets local, version-controlled repositories.
    - filesystem operation planning observes revisions and destination
      constraints but performs no effects. Application belongs to the explicit
      change-plan runtime.
+   - statistics expose I/O counts and cumulative duration without source
+     contents; an injectable monotonic clock makes timing instrumentation
+     deterministic in tests.
 2. JSON
    - object, property, array, and scalar nodes;
    - an explicit root node whose single child is the document value, with
@@ -1081,8 +1093,9 @@ client, credentials, dialect-specific behavior, and catalog acquisition.
 
 ## 19. Acceptance criteria for the architecture
 
-The core abstraction is considered validated when all of the following are
-demonstrated:
+The core abstraction is validated by executable public-boundary conformance
+tests. `packages/core/test/architecture.test.mjs` demonstrates the composed
+criteria, while focused adapter/query tests retain lower-level failure coverage:
 
 - one query traverses a directory and mounts at least two file-format adapters;
 - the same selector engine operates over filesystem, document, and code nodes;
@@ -1138,10 +1151,9 @@ design:
   SQL update/delete stays adapter-specific and reports local rollback,
   optimistic concurrency, and post-commit irreversibility separately.
 
-## 21. Recommended implementation sequence
+## 21. Validated implementation sequence
 
-The active, dependency-aware form of this sequence lives in
-[TODO.md](./TODO.md). That index and its files contain only work that remains.
+The architecture was implemented and pressure-tested in this dependency order:
 
 1. Implement an in-memory test adapter and executable logical query algebra.
 2. Implement filesystem traversal with streaming and predicate pushdown.
@@ -1155,7 +1167,8 @@ The active, dependency-aware form of this sequence lives in
 9. Prototype one SQL adapter specifically to test lazy query pushdown, joins,
     transactions, and the limits of the abstraction.
 
-The primary limiting factor is not parsing or selector syntax. It is defining
+The primary limiting factor was not parsing or selector syntax. It was defining
 an adapter and change protocol that is uniform enough to compose while still
-preserving source-specific semantics, performance, and safety. The implementation
-sequence is designed to test that boundary early.
+preserving source-specific semantics, performance, and safety. This sequence
+tested that boundary before architecture acceptance; [TODO.md](./TODO.md) now
+contains no remaining implementation items.

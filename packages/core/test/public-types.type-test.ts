@@ -101,6 +101,9 @@ const filesystemSource: FilesystemSource = {
 };
 const filesystemQuery = fromFilesystem(createFilesystemAdapter(), filesystemSource);
 void filesystemQuery;
+const observedFilesystem = createFilesystemAdapter({ clock: () => 0 });
+const filesystemIoDuration: number = observedFilesystem.statistics().ioDurationMs;
+void filesystemIoDuration;
 
 declare const filesystemChange: FilesystemChange;
 const filesystemChangeKind: "fs::write" | "fs::move" | "fs::remove" | "fs::create" =

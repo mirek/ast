@@ -46,13 +46,16 @@ test("filesystem traversal pushes safe predicates down and stops before walking 
     });
 
     assert.deepEqual(await paths(take(query, 1)), ["a.ts"]);
-    assert.deepEqual(adapter.statistics(), {
+    const { ioDurationMs, ...statistics } = adapter.statistics();
+    assert.deepEqual(statistics, {
       opened: 1,
       closed: 1,
       directoriesRead: 1,
       entriesRead: 4,
       nodesObserved: 2,
+      ioOperations: 5,
     });
+    assert.equal(ioDurationMs >= 0, true);
     assert.deepEqual(await paths(query), ["a.ts", "later/c.ts"]);
 
     const explained = query.filter(() => true, "runtime policy").explain();
