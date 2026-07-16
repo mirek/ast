@@ -354,15 +354,17 @@ export interface Adapter {
 ```
 
 Read, planning, and apply are separate structural capabilities. Possessing a
-read capability never implies permission to plan or apply effects. Native query
-compilation and execution remain provisional extensions to be added only when
-the query runtime and adapter evidence require them.
+read capability never implies permission to plan or apply effects. The SQL
+prototype demonstrates native query compilation as an adapter-specific typed
+source layered over `Query`; it does not add native compilation to the generic
+adapter contract or attempt to translate arbitrary callback operators.
 
 Contract version 1 stabilizes resource cleanup, roots and tree views, hydration,
 edge reads, planning, explicit apply, diagnostics, and nested mount opening as
 focused capabilities. Tree-view choice is a typed source field. Adapter-specific
 statistics, native query compilation, cost estimation, and watch support remain
-provisional. Validation rejects capability/schema mismatches before execution;
+adapter-specific or provisional. Validation rejects capability/schema
+mismatches before execution;
 compatibility requires contract version, namespace, and schema version equality.
 
 ### 7.1 Capabilities
@@ -714,6 +716,23 @@ Execution uses `AsyncIterable` semantics and honors backpressure. Cancellation
 propagates to adapters. Resources MUST be closed when a query completes, fails,
 or is cancelled.
 
+The SQL prototype's `fromSqlRows` source accepts a serializable table,
+predicate, projection, ordering, aggregation, inner-equality-join, offset, and
+limit description. It compiles identifiers only after catalog resolution,
+places every scalar value in a parameter array, streams the client's
+`AsyncIterable`, and exposes the generated statement and pushed operators in
+`explain`. A callback-only predicate remains a runtime `filter`; a dependent
+limit remains a runtime `take`, so fallback cannot change filter-before-limit
+semantics. Native joins are explicit, while joins to local resources continue
+to use the buffering runtime equality join. No automatic cost-based choice is
+claimed.
+
+The prototype uses quoted identifiers and PostgreSQL-style numbered parameter
+positions as its concrete pressure-test dialect. A production client owns
+dialect translation. The injected client's `transaction` method MUST either
+commit every supplied statement atomically or reject; the adapter does not
+simulate rollback around a non-transactional client.
+
 ## 12. TypeScript API
 
 The programmatic API is the reference interface.
@@ -976,8 +995,9 @@ The first useful release targets local, version-controlled repositories.
      read-only. Initial project references are diagnosed as unsupported rather
      than being loaded partially or silently.
 
-YAML, TOML, Git, SQL, and remote-service adapters follow after the contracts
-have survived the required adapters.
+YAML, TOML, Git, production database drivers, and remote-service adapters follow
+after the contracts have survived the required adapters. The injected-client
+SQL prototype below tests the database boundary without adding a driver.
 
 ### 17.2 Required runtime functionality
 
@@ -993,7 +1013,24 @@ have survived the required adapters.
 - explicit plan application;
 - logical and physical plan explanation.
 
-### 17.3 Deliberately deferred
+### 17.3 SQL prototype
+
+`createSqlAdapter` accepts a credential-free display URI, an observed catalog,
+and an injected client. The catalog graph exposes server, database, schema,
+table, column, and relation nodes; relation endpoints are reference edges.
+Metadata traversal never scans rows. Catalog-derived `sql::row` schemas describe
+known scalar columns, while row scans remain lazy adapter-specific sources.
+
+Primary-key tables use key-derived row identity. Keyless tables use an explicit
+query-scoped ordinal and are never presented as persistently identified.
+Revision columns provide row-level optimistic predicates where declared;
+otherwise a mutation can claim only local transaction isolation. Update/delete
+planning is pure and records parameterized statements, catalog revision,
+concurrency mode, irreversible risk, and one database-local atomic transaction.
+Apply rechecks catalog revision and optimistic affected-row counts before
+reporting success. Cross-database or cross-adapter atomicity is not implied.
+
+### 17.4 Deliberately deferred
 
 - distributed execution;
 - optimizer cost models beyond simple heuristics;
@@ -1036,9 +1073,11 @@ file patches.
 
 ### 18.4 Database adapter
 
-A future SQL adapter exposes schema nodes and lazy row selections. A row
-predicate is pushed down as SQL, while joins with local configuration use the
-runtime planner. Rows are never materialized merely to satisfy the node model.
+The SQL prototype exposes catalog nodes and lazy row selections. Declarative row
+predicates are pushed into parameterized SQL, while joins with local
+configuration use the runtime planner. Rows are streamed and never materialized
+merely to satisfy the node model. A production adapter supplies the injected
+client, credentials, dialect-specific behavior, and catalog acquisition.
 
 ## 19. Acceptance criteria for the architecture
 
@@ -1076,6 +1115,28 @@ design:
 8. Where is the boundary between selector functions and arbitrary user code?
 9. Is the textual DSL expression-only, or does it eventually need bindings,
     reusable functions, and modules?
+
+### 20.1 SQL prototype decisions
+
+- **Keep:** catalog structure as ordinary graph nodes and named child/reference
+  edges; lazy rows as node handles with catalog-derived dynamic attributes.
+- **Keep:** the existing `Query` and change-plan contracts. Native compilation,
+  statements, affected-row checks, and local transactions remain adapter-owned
+  extensions, so adapter contract version 1 does not change.
+- **Keep:** a closed declarative SQL predicate/projection/order/aggregate/join
+  source with catalog-resolved identifiers and parameter-only scalar values.
+- **Keep:** runtime equality joins for SQL-to-local data and callback fallback
+  through ordinary query operators. Limits move to runtime whenever pushing
+  them would precede an unsupported filter.
+- **Change:** row identity documentation must distinguish primary-key identity
+  from query-scoped ordinal identity; a universal stable row ID is rejected.
+- **Reject:** raw SQL fragments, callback-to-SQL translation, silent column
+  ambiguity across joins, and native limit/offset placement that changes
+  fallback semantics.
+- **Reject:** automatic native-versus-runtime join selection without a proven
+  cost interface, generic row rewrites, or cross-resource transaction claims.
+  SQL update/delete stays adapter-specific and reports local rollback,
+  optimistic concurrency, and post-commit irreversibility separately.
 
 ## 21. Recommended implementation sequence
 
