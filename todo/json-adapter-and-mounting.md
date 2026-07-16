@@ -1,7 +1,7 @@
 ---
 title: Implement JSON adaptation and nested mounts
 summary: Expose JSON structure as nodes and prove transparent traversal between filesystem and document adapters.
-depends_on: [filesystem-adapter]
+depends_on: []
 spec_sections: [7.2, 17.1, 17.2, 18.1]
 ---
 
@@ -16,7 +16,9 @@ produce faithful updates for ordinary JSON documents.
 - Preserve deterministic object/array traversal and distinguish missing from
   explicit null.
 - Define mount identity, ownership, lifecycle, provenance, and the path back to
-  the containing filesystem node.
+  the containing `fs::file` node exposed by `createFilesystemAdapter`.
+- Reuse lazy `fromFilesystem` discovery without reading file bytes until a JSON
+  mount is actually opened.
 - Support value replacement, property insertion/removal, and array edits through
   adapter operations.
 - Preserve encoding and final-newline behavior; document formatting limits.

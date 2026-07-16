@@ -742,7 +742,20 @@ The first useful release targets local, version-controlled repositories.
 1. Filesystem
    - directories, files, and symlinks;
    - lazy walking with glob and metadata predicate pushdown;
-   - write, move, and remove plans.
+   - write, move, remove, and create plans.
+   - node identity is the normalized root-relative path within an observed
+     revision; origins use file URIs and opaque `lstat`-derived revision tokens;
+   - directory children use deterministic code-point path ordering, while
+     symlink targets are reference edges that child traversal never follows;
+   - include/exclude globs, node kinds, size bounds, and modification-time
+     bounds may be pushed into walking and MUST remain visible in physical
+     explanations;
+   - file contents, including large and binary values, remain opaque during
+     metadata queries; write/create intent carries explicit UTF-8 or base64
+     encoding;
+   - filesystem operation planning observes revisions and destination
+     constraints but performs no effects. Application belongs to the explicit
+     change-plan runtime.
 2. JSON
    - object, property, array, and scalar nodes;
    - lossless-enough updates for ordinary JSON files.
