@@ -7,6 +7,7 @@ import type {
   Adapter,
   ApplyCapability,
   ApplyResult,
+  MountCapability,
   AttributeProjection,
   OpenContext,
   Operation,
@@ -142,6 +143,7 @@ export interface JsonAdapter extends Adapter {
   readonly read: ReadCapability;
   readonly planning: PlanningCapability<JsonOperation, JsonChange>;
   readonly apply: ApplyCapability<JsonChange, ApplyResult>;
+  readonly mount: MountCapability;
   diagnostics(): readonly Diagnostic[];
   statistics(): JsonStatistics;
 }
@@ -1674,12 +1676,31 @@ export const createJsonAdapter = (): JsonAdapter => {
     },
   };
 
+  const mount: MountCapability = {
+    edge: "json::mount",
+    open(container, source, context) {
+      return source.text === undefined
+        ? load(source.uri, container, context, "skip")
+        : loadText(
+            container,
+            {
+              uri: source.uri,
+              text: source.text,
+              ...(source.revision === undefined ? {} : { revision: source.revision }),
+            },
+            context,
+            "skip",
+          );
+    },
+  };
   const adapter: JsonAdapter = Object.freeze({
+    contractVersion: "1",
     namespace: "json",
     schema,
     read,
     planning,
     apply,
+    mount,
     diagnostics: () => Object.freeze([...diagnostics]),
     statistics: () => Object.freeze({ ...statistics }),
   });

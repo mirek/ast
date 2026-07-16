@@ -1,7 +1,7 @@
 ---
 title: Design and implement the textual DSL
 summary: Add concise pipeline syntax only after the TypeScript algebra and adapter contracts are proven.
-depends_on: [stabilize-adapter-contracts]
+depends_on: []
 spec_sections: [9.7, 10, 11, 12, 20]
 ---
 

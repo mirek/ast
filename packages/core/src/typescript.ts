@@ -4,7 +4,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as ts from "typescript";
 
-import type { Adapter, ApplyCapability, ApplyResult, AttributeProjection, OpenContext, Operation, PlanningCapability, ReadCapability, ResourceHandle, RootRequest, SourceDescriptor } from "./adapter.js";
+import type { Adapter, ApplyCapability, ApplyResult, AttributeProjection, MountCapability, OpenContext, Operation, PlanningCapability, ReadCapability, ResourceHandle, RootRequest, SourceDescriptor } from "./adapter.js";
 import type { Change, ChangePrecondition, ChangeRegion, ChangeTransaction, TextChangePreview } from "./change.js";
 import { defineDiagnostic } from "./diagnostic.js";
 import type { Diagnostic } from "./diagnostic.js";
@@ -42,6 +42,7 @@ export interface TypeScriptAdapter extends Adapter {
   readonly read: ReadCapability;
   readonly planning: PlanningCapability<TypeScriptOperation, TypeScriptChange>;
   readonly apply: ApplyCapability<TypeScriptChange, ApplyResult>;
+  readonly mount: MountCapability;
   diagnostics(): readonly Diagnostic[];
   statistics(): TypeScriptStatistics;
 }
@@ -289,7 +290,8 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
     return Object.freeze({ applied: changes.length, diagnostics: Object.freeze([]) });
   } };
 
-  const adapter: TypeScriptAdapter = Object.freeze({ namespace: "ts", schema, read, planning, apply, diagnostics: () => Object.freeze([...diagnostics]), statistics: () => Object.freeze({ ...statistics }) });
+  const mount: MountCapability = { edge: "ts::mount", open(container, source, context) { return openPath(pathOf(source.uri), container, context); } };
+  const adapter: TypeScriptAdapter = Object.freeze({ contractVersion: "1", namespace: "ts", schema, read, planning, apply, mount, diagnostics: () => Object.freeze([...diagnostics]), statistics: () => Object.freeze({ ...statistics }) });
   adapterInternals.set(adapter, { async openMounted(container, context) { if (container.kind !== "fs::file" || container.origin?.uri === undefined) throw new TypeError("TypeScript mounts require an fs::file."); return openPath(fileURLToPath(container.origin.uri), container, context); } });
   return adapter;
 };

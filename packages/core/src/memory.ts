@@ -258,6 +258,7 @@ export const createInMemoryAdapter = (fixture: InMemoryFixture): InMemoryAdapter
   };
 
   return Object.freeze({
+    contractVersion: "1",
     namespace: resource.adapter,
     schema: inferSchema(resource, nodes, edges, ordering),
     read,

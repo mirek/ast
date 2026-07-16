@@ -1,5 +1,6 @@
 export type {
   Adapter,
+  AdapterCompatibility,
   ApplyCapability,
   ApplyContext,
   ApplyResult,
@@ -12,7 +13,10 @@ export type {
   ResourceHandle,
   RootRequest,
   SourceDescriptor,
+  MountCapability,
+  MountSourceDescriptor,
 } from "./adapter.js";
+export { adapterCompatibility, validateAdapter } from "./adapter.js";
 export {
   applyChangePlan,
   deserializeChangePlan,

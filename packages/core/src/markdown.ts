@@ -7,6 +7,7 @@ import type {
   Adapter,
   ApplyCapability,
   ApplyResult,
+  MountCapability,
   AttributeProjection,
   OpenContext,
   Operation,
@@ -125,6 +126,7 @@ export interface MarkdownAdapter extends Adapter {
   readonly read: ReadCapability;
   readonly planning: PlanningCapability<MarkdownOperation, MarkdownChange>;
   readonly apply: ApplyCapability<MarkdownChange, ApplyResult>;
+  readonly mount: MountCapability;
   diagnostics(): readonly Diagnostic[];
   statistics(): MarkdownStatistics;
 }
@@ -955,7 +957,7 @@ export const createMarkdownAdapter = (
 
   const read: ReadCapability = {
     async open(source: SourceDescriptor, context: OpenContext) {
-      const selected = source.options?.treeView;
+      const selected = source.treeView ?? source.options?.treeView;
       const view: MarkdownTreeView = selected === "markdown::section-tree"
         ? selected
         : "markdown::syntax-tree";
@@ -1137,12 +1139,20 @@ export const createMarkdownAdapter = (
     },
   };
 
+  const mount: MountCapability = {
+    edge: "markdown::mount",
+    open(container, source, context) {
+      return load(source.uri, "markdown::syntax-tree", container, context);
+    },
+  };
   const adapter = Object.freeze({
+    contractVersion: "1" as const,
     namespace: "markdown" as const,
     schema,
     read,
     planning,
     apply,
+    mount,
     diagnostics: () => Object.freeze([...diagnostics]),
     statistics: () => Object.freeze({ ...statistics }),
     mountedJson: options.json,
@@ -1167,7 +1177,7 @@ export const fromMarkdown = (
       async *[Symbol.asyncIterator]() {
         const descriptor: SourceDescriptor = {
           uri: source.uri,
-          ...(source.treeView === undefined ? {} : { options: { treeView: source.treeView } }),
+          ...(source.treeView === undefined ? {} : { treeView: source.treeView }),
         };
         const handle = await adapter.read.open(
           descriptor,
