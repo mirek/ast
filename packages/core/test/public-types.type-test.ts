@@ -19,6 +19,11 @@ import type {
   PluginPower,
   PluginRegistry,
   ReadCapability,
+  SqlAdapter,
+  SqlCatalog,
+  SqlClient,
+  SqlMutationTarget,
+  SqlRowSource,
 } from "../src/index.js";
 import {
   capture,
@@ -37,6 +42,8 @@ import {
   planOperations,
   project,
   registerPlugins,
+  fromSqlRows,
+  sqlUpdateRows,
 } from "../src/index.js";
 
 const syntheticNode: NodeSnapshot = {
@@ -174,3 +181,28 @@ void pluginManifest;
 const pluginPolicy: PluginPolicy = { allow: [] };
 const pluginRegistry: PluginRegistry = registerPlugins([], pluginPolicy);
 void pluginRegistry;
+
+declare const sqlAdapter: SqlAdapter;
+declare const sqlClient: SqlClient;
+const sqlCatalog: SqlCatalog = {
+  server: "local",
+  database: "app",
+  version: "catalog:1",
+  schemas: [],
+};
+void sqlCatalog;
+void sqlClient;
+const sqlSource: SqlRowSource = {
+  table: { schema: "public", name: "users" },
+  where: { kind: "comparison", column: "id", operator: "=", value: 1 },
+};
+const sqlQuery = fromSqlRows(sqlAdapter, sqlSource);
+void sqlQuery;
+const sqlTarget: SqlMutationTarget = {
+  resource: "app",
+  table: sqlSource.table,
+  where: { kind: "comparison", column: "id", operator: "=", value: 1 },
+  concurrency: { kind: "transaction" },
+};
+const sqlOperation = sqlUpdateRows(sqlAdapter, sqlTarget, { name: "updated" });
+void sqlOperation;

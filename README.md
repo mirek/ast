@@ -238,8 +238,43 @@ Adapters declare core contract version `1` plus an independent schema version.
 `validateAdapter` rejects capability/schema mismatches before execution, while
 `adapterCompatibility` returns the exact compatibility identity. Read and
 cleanup, tree views, hydration, edges, planning, apply, diagnostics, and nested
-mount opening are stable focused capabilities. Adapter statistics, native query
-compilation, cost estimates, and watching remain provisional.
+mount opening are stable focused capabilities. Adapter statistics, cost
+estimates, and watching remain provisional; native query compilation is an
+adapter-specific extension rather than a generic callback translation API.
+
+## SQL prototype
+
+`createSqlAdapter` takes an observed catalog, a credential-free display URI,
+and an injected `SqlClient`; the package does not add a database driver. Catalog
+queries expose server, database, schema, table, column, and relation nodes
+without scanning rows. `fromSqlRows` compiles catalog-validated predicates,
+projections, ordering, aggregation, inner joins, offsets, and limits to
+parameterized SQL and streams client rows with backpressure.
+The prototype request shape uses quoted identifiers and numbered parameters;
+production clients own dialect translation and must provide a genuinely atomic
+`transaction` implementation.
+
+```ts
+const sql = createSqlAdapter({ uri: "sql://local/app", catalog, client });
+const active = fromSqlRows(sql, {
+  table: { schema: "public", name: "users" },
+  select: ["id", "name"],
+  where: { kind: "comparison", column: "enabled", operator: "=", value: true },
+  orderBy: [{ column: "id", direction: "asc" }],
+  limit: 100,
+});
+```
+
+Values are always parameters and identifiers must resolve through the catalog.
+Callback predicates stay in the runtime; dependent limits stay after them.
+Native equijoins are explicit, while SQL-to-local joins use the ordinary
+buffering equality join. Primary keys provide row identity; keyless rows state
+that their identity is query-scoped.
+
+`sqlUpdateRows` and `sqlDeleteRows` produce pure plans. Apply rechecks the
+catalog revision, runs one database-local transaction, and verifies optimistic
+affected-row counts when a revision column is available. This prototype claims
+neither cross-resource atomicity nor post-commit reversibility.
 
 ## Textual DSL
 

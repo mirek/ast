@@ -1,7 +1,7 @@
 ---
 title: Validate the architecture end to end
 summary: Demonstrate the specification's acceptance criteria and operational qualities before declaring the first architecture stable.
-depends_on: [sql-adapter-prototype]
+depends_on: []
 spec_sections: [3, 15, 16, 17, 19]
 ---
 
