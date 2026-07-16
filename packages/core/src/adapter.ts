@@ -91,10 +91,18 @@ export interface MountCapability {
   ): Promise<ResourceHandle | undefined>;
 }
 
+export interface AdapterPluginIdentity {
+  readonly apiVersion: "1";
+  readonly name: string;
+  readonly version: string;
+  readonly integrity: string;
+}
+
 export interface Adapter {
   readonly contractVersion: "1";
   readonly namespace: string;
   readonly schema: AdapterSchema;
+  readonly plugin?: AdapterPluginIdentity;
   readonly read?: ReadCapability;
   readonly planning?: PlanningCapability;
   readonly apply?: ApplyCapability;
