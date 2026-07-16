@@ -1,7 +1,7 @@
 ---
 title: Stabilize adapter and operation contracts
 summary: Replace illustrative interfaces with evidence-based extension contracts after the required adapters exist.
-depends_on: [typescript-adapter]
+depends_on: []
 spec_sections: [7, 8, 10, 19, 20]
 ---
 
