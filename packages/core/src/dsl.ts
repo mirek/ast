@@ -493,7 +493,20 @@ export const compileDsl = (
             operation: compiled.invocation?.create(value, compiled.invocation.args) ?? fail(program, "dsl.internal", "Missing invocation.", program.pipeline.range),
           };
         });
-        return await planOperations(operations);
+        const plan = await planOperations(operations);
+        if (plan.diagnostics.length === 0) return plan;
+        const programLocation = {
+          kind: "program" as const,
+          uri: program.uri,
+          range: compiled.invocation?.step.range ?? program.pipeline.range,
+        };
+        return immutableCopy({
+          ...plan,
+          diagnostics: plan.diagnostics.map((value) => defineDiagnostic({
+            ...value,
+            locations: [programLocation, ...value.locations],
+          })),
+        });
       } catch (error) {
         if (error instanceof DslError) throw error;
         throw new DslError([diagnostic("dsl.planning-failed", error instanceof Error ? error.message : "Planning failed.", program.uri, compiled.invocation?.step.range ?? program.pipeline.range)]);

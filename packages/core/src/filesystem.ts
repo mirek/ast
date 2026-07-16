@@ -117,10 +117,13 @@ export interface FilesystemStatistics {
   readonly directoriesRead: number;
   readonly entriesRead: number;
   readonly nodesObserved: number;
+  readonly ioOperations: number;
+  readonly ioDurationMs: number;
 }
 
 export interface FilesystemAdapterOptions {
   readonly ignore?: readonly string[];
+  readonly clock?: () => number;
 }
 
 export interface FilesystemAdapter extends Adapter {
@@ -146,6 +149,8 @@ interface MutableStatistics {
   directoriesRead: number;
   entriesRead: number;
   nodesObserved: number;
+  ioOperations: number;
+  ioDurationMs: number;
 }
 
 const schema = defineAdapterSchema({
@@ -428,6 +433,15 @@ export const createFilesystemAdapter = (
     directoriesRead: 0,
     entriesRead: 0,
     nodesObserved: 0,
+    ioOperations: 0,
+    ioDurationMs: 0,
+  };
+  const clock = options.clock ?? (() => performance.now());
+  const io = async <T>(operation: () => Promise<T>): Promise<T> => {
+    const start = clock();
+    statistics.ioOperations += 1;
+    try { return await operation(); }
+    finally { statistics.ioDurationMs += Math.max(0, clock() - start); }
   };
 
   const recordFailure = (
@@ -473,7 +487,7 @@ export const createFilesystemAdapter = (
   ): Promise<NodeSnapshot | undefined> => {
     throwIfAborted(signal);
     try {
-      const stat = await lstat(path);
+      const stat = await io(() => lstat(path));
       throwIfAborted(signal);
       statistics.nodesObserved += 1;
       const kind = nodeKind(stat);
@@ -508,7 +522,7 @@ export const createFilesystemAdapter = (
     throwIfAborted(signal);
     try {
       statistics.directoriesRead += 1;
-      const entries = await readdir(directory, { withFileTypes: true });
+      const entries = await io(() => readdir(directory, { withFileTypes: true }));
       throwIfAborted(signal);
       statistics.entriesRead += entries.length;
       return entries
@@ -566,8 +580,8 @@ export const createFilesystemAdapter = (
     async open(source: SourceDescriptor, context: OpenContext): Promise<ResourceHandle> {
       throwIfAborted(context.signal);
       const root = sourcePath(source.uri);
-      const rootStat = await lstat(root);
-      const canonicalRoot = await realpath(root);
+      const rootStat = await io(() => lstat(root));
+      const canonicalRoot = await io(() => realpath(root));
       throwIfAborted(context.signal);
       const sourceExclude = source.options?.exclude;
       const excludes = Array.isArray(sourceExclude)
@@ -649,7 +663,7 @@ export const createFilesystemAdapter = (
             (requestedRoles === undefined || requestedRoles.includes("reference"))
           ) {
             try {
-              const targetPath = await realpath(path);
+              const targetPath = await io(() => realpath(path));
               throwIfAborted(request.signal);
               const local = relative(state.canonicalRoot, targetPath);
               if (local === ".." || local.startsWith(`..${sep}`) || isAbsolute(local)) {
@@ -737,7 +751,7 @@ export const createFilesystemAdapter = (
   ): Promise<Revision | undefined> => {
     const path = absolutePath(state.root, local);
     try {
-      return revisionOf(await lstat(path));
+      return revisionOf(await io(() => lstat(path)));
     } catch (error) {
       recordFailure(path, error, operation);
       return undefined;
@@ -791,7 +805,7 @@ export const createFilesystemAdapter = (
           ? Object.freeze({
               kind: "text" as const,
               uri: targetUri,
-              before: await readFile(absolutePath(state.root, local), "utf8"),
+              before: await io(() => readFile(absolutePath(state.root, local), "utf8")),
               after: operation.payload.content,
               sensitive: true,
             })
@@ -908,7 +922,7 @@ export const createFilesystemAdapter = (
 
   const revisionAt = async (uri: string): Promise<Revision | undefined> => {
     try {
-      return revisionOf(await lstat(fileURLToPath(uri)));
+      return revisionOf(await io(() => lstat(fileURLToPath(uri))));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
@@ -951,37 +965,37 @@ export const createFilesystemAdapter = (
             throw new TypeError("Filesystem write payload is invalid.");
           }
           // oxlint-disable-next-line no-await-in-loop
-          await writeFile(path, encoding === "utf8" ? content : Buffer.from(content, "base64"));
+          await io(() => writeFile(path, encoding === "utf8" ? content : Buffer.from(content, "base64")));
         } else if (change.kind === "fs::move") {
           const destinationUri = change.payload.destinationUri;
           if (typeof destinationUri !== "string") {
             throw new TypeError("Filesystem move destination URI is missing.");
           }
           // oxlint-disable-next-line no-await-in-loop
-          await rename(path, fileURLToPath(destinationUri));
+          await io(() => rename(path, fileURLToPath(destinationUri)));
         } else if (change.kind === "fs::remove") {
           // oxlint-disable-next-line no-await-in-loop
-          await rm(path, { recursive: true });
+          await io(() => rm(path, { recursive: true }));
         } else {
           if (change.payload.nodeKind === "directory") {
             // oxlint-disable-next-line no-await-in-loop
-            await mkdir(path);
+            await io(() => mkdir(path));
           } else {
             const encoding = change.payload.encoding;
             const content = change.payload.content;
             if (encoding === undefined && content === undefined) {
               // oxlint-disable-next-line no-await-in-loop
-              await writeFile(path, "", { flag: "wx" });
+              await io(() => writeFile(path, "", { flag: "wx" }));
             } else if (
               (encoding === "utf8" || encoding === "base64") &&
               typeof content === "string"
             ) {
               // oxlint-disable-next-line no-await-in-loop
-              await writeFile(
+              await io(() => writeFile(
                 path,
                 encoding === "utf8" ? content : Buffer.from(content, "base64"),
                 { flag: "wx" },
-              );
+              ));
             } else {
               throw new TypeError("Filesystem create payload is invalid.");
             }
