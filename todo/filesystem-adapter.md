@@ -1,7 +1,7 @@
 ---
 title: Implement the filesystem adapter
 summary: Stream local directory graphs with metadata pushdown, revisions, provenance, and safe operation planning.
-depends_on: [selector-engine]
+depends_on: []
 spec_sections: [7, 17.1, 17.2]
 ---
 

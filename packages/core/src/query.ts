@@ -238,7 +238,11 @@ export class Query<Value, Captures extends CaptureMap = EmptyCaptures>
   }
 
   filter(
-    predicate: (value: Value, captures: Captures) => MaybePromise<boolean>,
+    predicate: (
+      value: Value,
+      captures: Captures,
+      options: ExecuteOptions,
+    ) => MaybePromise<boolean>,
     label = "predicate",
   ): Query<Value, Captures> {
     const parent = this.#node;
@@ -254,7 +258,7 @@ export class Query<Value, Captures extends CaptureMap = EmptyCaptures>
           async *[Symbol.asyncIterator]() {
             for await (const row of parent.execute(options)) {
               throwIfAborted(options.signal);
-              if (await predicate(row.value, row.captures)) {
+              if (await predicate(row.value, row.captures, options)) {
                 throwIfAborted(options.signal);
                 yield row;
               }
@@ -296,6 +300,7 @@ export class Query<Value, Captures extends CaptureMap = EmptyCaptures>
     projection: (
       value: Value,
       captures: Captures,
+      options: ExecuteOptions,
     ) => MaybePromise<Iterable<Result> | AsyncIterable<Result>>,
     label = "projection",
   ): Query<Result, Captures> {
@@ -312,7 +317,7 @@ export class Query<Value, Captures extends CaptureMap = EmptyCaptures>
           async *[Symbol.asyncIterator]() {
             for await (const row of parent.execute(options)) {
               throwIfAborted(options.signal);
-              const values = await projection(row.value, row.captures);
+              const values = await projection(row.value, row.captures, options);
               for await (const value of toAsyncIterable(values)) {
                 throwIfAborted(options.signal);
                 yield { value, captures: row.captures };
@@ -710,7 +715,11 @@ export const fromAdapter = (
 
 export const filter = <Value, Captures extends CaptureMap>(
   query: Query<Value, Captures>,
-  predicate: (value: Value, captures: Captures) => MaybePromise<boolean>,
+  predicate: (
+    value: Value,
+    captures: Captures,
+    options: ExecuteOptions,
+  ) => MaybePromise<boolean>,
   label?: string,
 ): Query<Value, Captures> => query.filter(predicate, label);
 
@@ -725,6 +734,7 @@ export const flatMap = <Value, Captures extends CaptureMap, Result>(
   projection: (
     value: Value,
     captures: Captures,
+    options: ExecuteOptions,
   ) => MaybePromise<Iterable<Result> | AsyncIterable<Result>>,
   label?: string,
 ): Query<Result, Captures> => query.flatMap(projection, label);

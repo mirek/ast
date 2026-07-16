@@ -82,6 +82,21 @@ export type {
   QueryOperator,
   TraverseOptions,
 } from "./query.js";
+export { SelectorError, parseSelector, select, validateSelector } from "./selector.js";
+export type {
+  SelectorAttributePredicate,
+  SelectorCaptureReference,
+  SelectorCombinator,
+  SelectorCompound,
+  SelectorLiteral,
+  SelectorOperand,
+  SelectorOptions,
+  SelectorProgram,
+  SelectorPseudo,
+  SelectorRegularExpression,
+  SelectorSequence,
+  SelectorStep,
+} from "./selector.js";
 export { defineAdapterSchema } from "./schema.js";
 export type {
   AdapterCapabilities,
