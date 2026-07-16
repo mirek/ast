@@ -6,6 +6,7 @@ import type {
   AttributeValue,
   Edge,
   EdgeName,
+  NamespacedName,
   NodeHandle,
   Scalar,
   SourceRange,
@@ -22,6 +23,7 @@ import type { AdapterSchema, AttributeSchema, NodeKindSchema, ScalarType } from 
 
 export interface SelectorOptions {
   readonly uri?: string;
+  readonly treeView?: NamespacedName;
 }
 
 export type SelectorCombinator =
@@ -746,8 +748,16 @@ export const validateSelector = (program: SelectorProgram, schema: AdapterSchema
   for (const sequence of program.selectors) validateSequence(sequence, schema, new Map(), program.uri);
 };
 
-const childEdges = (schema: AdapterSchema): readonly EdgeName[] => {
-  const tree = schema.treeViews.find(({ default: isDefault }) => isDefault === true) ?? schema.treeViews[0];
+const childEdges = (
+  schema: AdapterSchema,
+  treeView?: NamespacedName,
+): readonly EdgeName[] => {
+  const tree = treeView === undefined
+    ? schema.treeViews.find(({ default: isDefault }) => isDefault === true) ?? schema.treeViews[0]
+    : schema.treeViews.find(({ name }) => name === treeView);
+  if (treeView !== undefined && tree === undefined) {
+    throw new TypeError(`Unknown tree view ${treeView}.`);
+  }
   return tree?.childEdges ?? schema.edges.filter(({ role }) => role === "child").map(({ name }) => name);
 };
 
@@ -766,8 +776,9 @@ const traverseSingle = (
   query: Query<NavigableNodeHandle, CaptureMap>,
   combinator: SelectorCombinator,
   schema: AdapterSchema,
+  treeView?: NamespacedName,
 ): Query<NavigableNodeHandle, CaptureMap> => {
-  const treeEdges = childEdges(schema);
+  const treeEdges = childEdges(schema, treeView);
   if (combinator.kind === "descendant") {
     return query.traverse({ edgeNames: treeEdges, roles: ["child"], maxDepth: Number.MAX_SAFE_INTEGER });
   }
@@ -916,13 +927,21 @@ const matchesCompound = async (
   compound: SelectorCompound,
   schema: AdapterSchema,
   options: ExecuteOptions,
+  treeView?: NamespacedName,
 ): Promise<boolean> => {
   if (compound.kind !== undefined && node.snapshot.kind !== compound.kind) return false;
   if (!compound.attributes.every((predicate) => matchesAttribute(node, predicate, captures))) return false;
   for (const pseudo of compound.pseudos) {
     let anyMatch = false;
     for (const sequence of pseudo.selectors) {
-      const query = compileAnchored(node, sequence, schema, captures, pseudo.kind === "has");
+      const query = compileAnchored(
+        node,
+        sequence,
+        schema,
+        captures,
+        pseudo.kind === "has",
+        treeView,
+      );
       // Adapters do not imply parallel read safety, so alternatives are tested in order.
       // oxlint-disable-next-line no-await-in-loop
       if ((await query.take(1).toArray(options)).length > 0) {
@@ -940,6 +959,7 @@ const applyCompound = (
   compound: SelectorCompound,
   schema: AdapterSchema,
   ambient: CaptureMap = {},
+  treeView?: NamespacedName,
 ): Query<NavigableNodeHandle, CaptureMap> => {
   let result = query.filter(
     (node, captures, options) =>
@@ -949,6 +969,7 @@ const applyCompound = (
         compound,
         schema,
         options,
+        treeView,
       ),
     "selector predicate",
   );
@@ -964,16 +985,19 @@ const compileAnchored = (
   schema: AdapterSchema,
   ambient: CaptureMap,
   relative: boolean,
+  treeView?: NamespacedName,
 ): Query<NavigableNodeHandle, CaptureMap> => {
   let query = fromValues([node]) as Query<NavigableNodeHandle, CaptureMap>;
   const first = sequence.steps[0];
   if (first === undefined) return query.take(0);
   const leading = sequence.leading ?? (relative ? { kind: "descendant", range: sequence.range } : undefined);
-  if (leading !== undefined) query = traverseSingle(query, leading, schema);
-  query = applyCompound(query, first.compound, schema, ambient);
+  if (leading !== undefined) query = traverseSingle(query, leading, schema, treeView);
+  query = applyCompound(query, first.compound, schema, ambient, treeView);
   for (const step of sequence.steps.slice(1)) {
-    if (step.combinator !== undefined) query = traverseSingle(query, step.combinator, schema);
-    query = applyCompound(query, step.compound, schema, ambient);
+    if (step.combinator !== undefined) {
+      query = traverseSingle(query, step.combinator, schema, treeView);
+    }
+    query = applyCompound(query, step.compound, schema, ambient, treeView);
   }
   return query;
 };
@@ -982,13 +1006,16 @@ const compileSequence = (
   roots: Query<NavigableNodeHandle, CaptureMap>,
   sequence: SelectorSequence,
   schema: AdapterSchema,
+  treeView?: NamespacedName,
 ): Query<NavigableNodeHandle, CaptureMap> => {
   const first = sequence.steps[0];
   if (first === undefined) return roots.take(0);
-  let query = applyCompound(roots, first.compound, schema);
+  let query = applyCompound(roots, first.compound, schema, {}, treeView);
   for (const step of sequence.steps.slice(1)) {
-    if (step.combinator !== undefined) query = traverseSingle(query, step.combinator, schema);
-    query = applyCompound(query, step.compound, schema);
+    if (step.combinator !== undefined) {
+      query = traverseSingle(query, step.combinator, schema, treeView);
+    }
+    query = applyCompound(query, step.compound, schema, {}, treeView);
   }
   return query;
 };
@@ -1002,11 +1029,13 @@ export const select = (
   const program = typeof selector === "string" ? parseSelector(selector, options) : selector;
   validateSelector(program, adapter.schema);
   const roots = (fromAdapter(adapter, source) as Query<NavigableNodeHandle, CaptureMap>).traverse({
-    edgeNames: childEdges(adapter.schema),
+    edgeNames: childEdges(adapter.schema, options.treeView),
     roles: ["child"],
     maxDepth: Number.MAX_SAFE_INTEGER,
     includeSelf: true,
   });
   const sequence = program.selectors[0];
-  return sequence === undefined ? roots.take(0) : compileSequence(roots, sequence, adapter.schema);
+  return sequence === undefined
+    ? roots.take(0)
+    : compileSequence(roots, sequence, adapter.schema, options.treeView);
 };

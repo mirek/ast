@@ -191,7 +191,7 @@ interface NodeRecord {
 
 interface ResourceState {
   readonly resource: Resource;
-  readonly path: string;
+  readonly path?: string;
   readonly text: string;
   readonly bom: boolean;
   readonly finalNewline: boolean;
@@ -277,7 +277,7 @@ const schema = defineAdapterSchema({
     {
       name: "json::mount",
       role: "child",
-      from: ["fs::file"],
+      from: ["fs::file", "markdown::code-block"],
       to: ["json::root"],
       ordering: "stable",
     },
@@ -292,7 +292,7 @@ const schema = defineAdapterSchema({
       name: "json::container",
       role: "reference",
       from: ["json::root"],
-      to: ["fs::file"],
+      to: ["fs::file", "markdown::code-block"],
       ordering: "stable",
     },
   ],
@@ -1040,6 +1040,18 @@ interface JsonAdapterInternals {
     context: OpenContext,
     onError: "skip" | "throw",
   ): Promise<ResourceHandle | undefined>;
+  openTextMounted(
+    container: NodeSnapshot,
+    source: JsonTextMountSource,
+    context: OpenContext,
+    onError: "skip" | "throw",
+  ): Promise<ResourceHandle | undefined>;
+}
+
+export interface JsonTextMountSource {
+  readonly text: string;
+  readonly uri: string;
+  readonly revision?: Revision;
 }
 
 const adapterInternals = new WeakMap<JsonAdapter, JsonAdapterInternals>();
@@ -1112,6 +1124,56 @@ export const mountJson = <Captures extends CaptureMap>(
     (file) => mountedFilesystemHandle(file, adapter, options.onError ?? "skip"),
     "mount json",
   );
+
+export const mountJsonTextHandle = (
+  container: NavigableNodeHandle,
+  adapter: JsonAdapter,
+  source: JsonTextMountSource,
+  options: JsonMountOptions = {},
+): NavigableNodeHandle =>
+  Object.freeze({
+    snapshot: container.snapshot,
+    edges(request: EdgeRequest = {}) {
+      return {
+        async *[Symbol.asyncIterator]() {
+          for await (const edge of container.edges(request)) yield edge;
+          if (!requested(request, "json::mount", "child")) return;
+          const internals = adapterInternals.get(adapter);
+          if (internals === undefined) throw new TypeError("Unknown JSON adapter instance.");
+          const handle = await internals.openTextMounted(
+            container.snapshot,
+            source,
+            request.signal === undefined ? {} : { signal: request.signal },
+            options.onError ?? "skip",
+          );
+          if (handle === undefined) return;
+          try {
+            for await (const root of adapter.read.roots(handle.resource, request)) {
+              yield defineEdge({
+                name: "json::mount",
+                role: "child",
+                from: container.snapshot.id,
+                to: root.id,
+                ordinal: 0,
+              });
+            }
+          } finally {
+            await handle.close();
+          }
+        },
+      };
+    },
+    async resolve(id: NodeId, signal?: AbortSignal) {
+      if (id.adapter !== "json") return container.resolve(id, signal);
+      const [resolved] = await adapter.read.hydrate([id], {
+        attributes: [],
+        ...(signal === undefined ? {} : { signal }),
+      });
+      return resolved === undefined
+        ? undefined
+        : mountedJsonHandle(adapter, resolved, container);
+    },
+  });
 
 export const createJsonAdapter = (): JsonAdapter => {
   const resources = new Map<string, ResourceState>();
@@ -1287,6 +1349,62 @@ export const createJsonAdapter = (): JsonAdapter => {
     }
   };
 
+  const loadText = async (
+    container: NodeSnapshot,
+    source: JsonTextMountSource,
+    context: OpenContext,
+    onError: "skip" | "throw",
+  ): Promise<ResourceHandle | undefined> => {
+    throwIfAborted(context.signal);
+    statistics.opened += 1;
+    statistics.bytesRead += Buffer.byteLength(source.text);
+    statistics.parses += 1;
+    let closed = false;
+    const close = async (): Promise<void> => {
+      if (!closed) {
+        closed = true;
+        statistics.closed += 1;
+      }
+    };
+    const bom = source.text.startsWith("\uFEFF");
+    const text = bom ? source.text.slice(1) : source.text;
+    let rootSyntax: JsonSyntax;
+    try {
+      rootSyntax = new JsonParser(text).parse();
+    } catch (error) {
+      if (!(error instanceof JsonSyntaxFailure)) {
+        await close();
+        throw error;
+      }
+      const diagnostic = recordSyntaxFailure(source.uri, text, error);
+      await close();
+      if (onError === "throw") throw new Error(diagnostic.message, { cause: error });
+      return undefined;
+    }
+    const revision = source.revision ?? createHash("sha256").update(source.text).digest("base64url");
+    const resource = defineResource({
+      id: resourceKey(source.uri, container),
+      adapter: "json",
+      uri: source.uri,
+      revision,
+    });
+    const finalNewline = /[\r\n]$/u.test(text);
+    const newline = text.includes("\r\n") ? "\r\n" : text.includes("\r") ? "\r" : "\n";
+    const state: ResourceState = Object.freeze({
+      resource,
+      text,
+      bom,
+      finalNewline,
+      newline,
+      indent: inferIndent(text),
+      rootSyntax,
+      nodes: buildNodeRecords(resource, text, rootSyntax, bom, finalNewline),
+      container,
+    });
+    resources.set(resource.id, state);
+    return Object.freeze({ resource, close });
+  };
+
   const read: ReadCapability = {
     async open(source: SourceDescriptor, context: OpenContext): Promise<ResourceHandle> {
       if (source.uri.length === 0) throw new TypeError("JSON source URI must not be empty.");
@@ -1388,6 +1506,9 @@ export const createJsonAdapter = (): JsonAdapter => {
       if (record === undefined || operation.target.adapter !== "json") {
         throw new TypeError(`Unknown JSON operation target ${operation.target.local}.`);
       }
+      if (state.path === undefined) {
+        throw new TypeError("Embedded JSON mounts are read-only; edit their containing document.");
+      }
       const actualRevision = revisionOf(await lstat(state.path));
       throwIfAborted(context.signal);
       if (
@@ -1476,7 +1597,7 @@ export const createJsonAdapter = (): JsonAdapter => {
           sensitive: true,
         },
         transaction: {
-          key: "document",
+          key: state.resource.uri,
           atomic: true,
           rollback: "none",
           compensation: "none",
@@ -1570,6 +1691,9 @@ export const createJsonAdapter = (): JsonAdapter => {
       const uri = container.origin?.uri;
       if (uri === undefined) throw new TypeError("Mounted filesystem files require an origin URI.");
       return load(uri, container, context, onError);
+    },
+    openTextMounted(container, source, context, onError) {
+      return loadText(container, source, context, onError);
     },
   });
   return adapter;

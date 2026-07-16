@@ -303,7 +303,7 @@ const buildGroups = (
   for (const change of changes) {
     const key = change.transaction === undefined
       ? change.id
-      : `${change.adapter}\0${change.resource}\0${change.transaction.key}`;
+      : `${change.adapter}\0${change.transaction.key}`;
     let group = byKey.get(key);
     if (group === undefined) {
       group = {
