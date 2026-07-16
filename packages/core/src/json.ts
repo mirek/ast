@@ -1,9 +1,12 @@
-import { createHash } from "node:crypto";
-import { lstat, readFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { lstat, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type {
   Adapter,
+  ApplyCapability,
+  ApplyResult,
   AttributeProjection,
   OpenContext,
   Operation,
@@ -13,6 +16,13 @@ import type {
   RootRequest,
   SourceDescriptor,
 } from "./adapter.js";
+import type {
+  Change,
+  ChangePrecondition,
+  ChangeRegion,
+  ChangeTransaction,
+  TextChangePreview,
+} from "./change.js";
 import { defineDiagnostic } from "./diagnostic.js";
 import type { Diagnostic } from "./diagnostic.js";
 import { immutableCopy } from "./immutable.js";
@@ -88,10 +98,8 @@ export type JsonOperation =
   | JsonInsertArrayItemOperation
   | JsonRemoveArrayItemOperation;
 
-export interface JsonPrecondition {
-  readonly resource: string;
+export interface JsonPrecondition extends ChangePrecondition {
   readonly expectedRevision: Revision;
-  readonly description: string;
 }
 
 export interface JsonPatchPayload {
@@ -101,19 +109,20 @@ export interface JsonPatchPayload {
   readonly strategy: "localized-text-patch";
   readonly range: SourceRange;
   readonly replacement: string;
+  readonly original: string;
   readonly content: string;
   readonly formatting: string;
 }
 
-export interface JsonChange {
+export interface JsonChange extends Change<JsonPatchPayload> {
   readonly adapter: "json";
-  readonly resource: string;
   readonly kind: JsonOperationKind;
   readonly risk: "safe" | "destructive";
-  readonly summary: string;
   readonly reversible: true;
-  readonly payload: JsonPatchPayload;
   readonly preconditions: readonly JsonPrecondition[];
+  readonly regions: readonly ChangeRegion[];
+  readonly preview: TextChangePreview;
+  readonly transaction: ChangeTransaction;
 }
 
 export interface JsonStatistics {
@@ -132,6 +141,7 @@ export interface JsonAdapter extends Adapter {
   readonly namespace: "json";
   readonly read: ReadCapability;
   readonly planning: PlanningCapability<JsonOperation, JsonChange>;
+  readonly apply: ApplyCapability<JsonChange, ApplyResult>;
   diagnostics(): readonly Diagnostic[];
   statistics(): JsonStatistics;
 }
@@ -318,7 +328,7 @@ const schema = defineAdapterSchema({
     pushdown: [],
     ordering: "stable",
     revisions: true,
-    transactions: "none",
+    transactions: "local",
     semanticOperations: true,
     parallelReads: true,
     parallelWrites: false,
@@ -804,6 +814,7 @@ const patchPayload = (
     strategy: "localized-text-patch",
     range: sourceRange(state.text, start, end),
     replacement,
+    original: `${state.bom ? "\uFEFF" : ""}${state.text}`,
     content: `${state.bom ? "\uFEFF" : ""}${patched}`,
     formatting,
   });
@@ -1440,20 +1451,105 @@ export const createJsonAdapter = (): JsonAdapter => {
       }
       const precondition: JsonPrecondition = Object.freeze({
         resource: state.resource.id,
+        uri: state.resource.uri,
         expectedRevision: actualRevision,
+        expectation: "exists",
         description: "JSON source must retain its observed filesystem revision.",
       });
       const change: JsonChange = immutableCopy({
         adapter: "json",
         resource: state.resource.id,
+        resourceUri: state.resource.uri,
+        resourceRevision: actualRevision,
         kind: operation.kind,
         risk,
         summary,
         reversible: true,
         payload,
         preconditions: [precondition],
+        regions: [{ uri: state.resource.uri, range: payload.range }],
+        preview: {
+          kind: "text",
+          uri: state.resource.uri,
+          before: payload.original,
+          after: payload.content,
+          sensitive: true,
+        },
+        transaction: {
+          key: "document",
+          atomic: true,
+          rollback: "none",
+          compensation: "none",
+        },
       });
       return Object.freeze([change]);
+    },
+  };
+
+  const apply: ApplyCapability<JsonChange, ApplyResult> = {
+    async apply(changes, context) {
+      throwIfAborted(context.signal);
+      if (changes.length === 0) {
+        return Object.freeze({ applied: 0, diagnostics: Object.freeze([]) });
+      }
+      const first = changes[0];
+      if (first === undefined) throw new TypeError("JSON apply group is empty.");
+      if (
+        changes.some(
+          (change) =>
+            change.resource !== first.resource ||
+            change.payload.uri !== first.payload.uri ||
+            change.payload.original !== first.payload.original,
+        )
+      ) {
+        throw new TypeError("Atomic JSON changes must share one observed document.");
+      }
+      const path = fileURLToPath(first.payload.uri);
+      const stat = await lstat(path);
+      const actualRevision = revisionOf(stat);
+      for (const change of changes) {
+        for (const precondition of change.preconditions) {
+          if (
+            precondition.expectation !== "exists" ||
+            precondition.expectedRevision !== actualRevision
+          ) {
+            throw new Error(`JSON revision changed for ${precondition.uri}.`);
+          }
+        }
+      }
+      const current = new TextDecoder("utf-8", {
+        fatal: true,
+        ignoreBOM: true,
+      }).decode(await readFile(path));
+      if (current !== first.payload.original) {
+        throw new Error(`JSON content changed for ${first.payload.uri}.`);
+      }
+      const bom = current.startsWith("\uFEFF");
+      let text = bom ? current.slice(1) : current;
+      const ordered = [...changes].toSorted(
+        (left, right) => right.payload.range.start - left.payload.range.start,
+      );
+      let previousStart = Number.POSITIVE_INFINITY;
+      for (const change of ordered) {
+        const { start, end } = change.payload.range;
+        if (end > previousStart) throw new Error("JSON change patches overlap.");
+        text = `${text.slice(0, start)}${change.payload.replacement}${text.slice(end)}`;
+        previousStart = start;
+      }
+      throwIfAborted(context.signal);
+      const temporary = join(dirname(path), `.${basename(path)}.ast-${randomUUID()}`);
+      try {
+        await writeFile(temporary, `${bom ? "\uFEFF" : ""}${text}`, { mode: stat.mode });
+        throwIfAborted(context.signal);
+        await rename(temporary, path);
+      } catch (error) {
+        await rm(temporary, { force: true });
+        throw error;
+      }
+      return Object.freeze({
+        applied: changes.length,
+        diagnostics: Object.freeze([]),
+      });
     },
   };
 
@@ -1462,6 +1558,7 @@ export const createJsonAdapter = (): JsonAdapter => {
     schema,
     read,
     planning,
+    apply,
     diagnostics: () => Object.freeze([...diagnostics]),
     statistics: () => Object.freeze({ ...statistics }),
   });

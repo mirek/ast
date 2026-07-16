@@ -1,7 +1,7 @@
 ---
 title: Implement the Markdown adapter
 summary: Pressure-test semantic tree views, loss-aware editing, frontmatter, and nested language mounts.
-depends_on: [change-plans-and-local-apply]
+depends_on: []
 spec_sections: [7.2, 17.1, 18.3]
 ---
 

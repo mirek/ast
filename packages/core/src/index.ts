@@ -13,6 +13,34 @@ export type {
   RootRequest,
   SourceDescriptor,
 } from "./adapter.js";
+export {
+  applyChangePlan,
+  deserializeChangePlan,
+  planOperations,
+  renderChangePlan,
+  resourceIdentity,
+  serializeChangePlan,
+} from "./change.js";
+export type {
+  ApplyChangePlanOptions,
+  ApplyGroupResult,
+  ApplyGroupStatus,
+  Change,
+  ChangePlan,
+  ChangePlanApplyResult,
+  ChangePrecondition,
+  ChangeRegion,
+  ChangeRisk,
+  ChangeTransaction,
+  DeserializeChangePlanOptions,
+  PlanAdapterIdentity,
+  PlannedChange,
+  PlannedOperation,
+  PlanResourceIdentity,
+  RenderChangePlanOptions,
+  TextChangePreview,
+  TransactionGroup,
+} from "./change.js";
 export { defineDiagnostic } from "./diagnostic.js";
 export type {
   Diagnostic,

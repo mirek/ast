@@ -256,31 +256,51 @@ preconditions and safety metadata.
 ```ts
 export type ChangeRisk = "safe" | "destructive" | "irreversible";
 
-export interface Precondition {
+export interface ChangePrecondition {
   readonly resource: string;
+  readonly uri: string;
   readonly expectedRevision?: string;
+  readonly expectation: "exists" | "absent";
   readonly description: string;
 }
 
 export interface Change {
   readonly adapter: string;
   readonly resource: string;
-  readonly kind: string;
+  readonly resourceUri: string;
+  readonly resourceRevision?: string;
+  readonly kind: `${string}::${string}`;
   readonly risk: ChangeRisk;
   readonly summary: string;
   readonly reversible: boolean;
   readonly payload: unknown;
-  readonly preconditions: readonly Precondition[];
+  readonly preconditions: readonly ChangePrecondition[];
+  readonly regions: readonly ChangeRegion[];
+  readonly preview?: TextChangePreview;
+  readonly transaction?: ChangeTransaction;
 }
 
 export interface ChangePlan {
-  readonly changes: readonly Change[];
+  readonly formatVersion: "1";
+  readonly adapters: readonly PlanAdapterIdentity[];
+  readonly resources: readonly PlanResourceIdentity[];
+  readonly changes: readonly PlannedChange[];
   readonly diagnostics: readonly Diagnostic[];
   readonly transactionGroups: readonly TransactionGroup[];
 }
 ```
 
-The `payload` is adapter-private and MUST be serializable when a plan is saved.
+The `payload` is adapter-private and MUST be JSON-serializable when a plan is
+saved. Regions are normalized URIs with optional half-open source ranges; they
+exist for generic conflict detection and do not replace adapter-owned payload
+semantics. Text previews are sensitive by default and render as redacted unless
+the caller explicitly opts into source content.
+
+Plans assign deterministic operation, change, and transaction-group IDs. They
+record exact adapter schema versions and resource identities. The saved-plan
+envelope includes an integrity digest; loading validates the format, digest,
+adapter versions, internal identities, and any caller-supplied current resource
+identities before replay is allowed.
 
 ## 7. Adapter model
 
@@ -582,6 +602,12 @@ Planning proceeds through these phases:
 
 Planning MUST remain free of externally visible mutations.
 
+The executable planner accepts explicitly identified operations and dependency
+IDs. Adapter planning runs in deterministic dependency order. Overlapping whole
+resources or half-open source ranges produce error diagnostics; a plan with any
+error diagnostic cannot be applied. Non-overlapping JSON patches against one
+observed document share one local atomic transaction group.
+
 ### 10.3 Applying a plan
 
 Before applying a transaction group, the runtime checks its preconditions.
@@ -593,6 +619,15 @@ compensation actions.
 
 The runtime MUST stop scheduling changes that depend on a failed change. It MAY
 continue independent groups only when the user selected that policy.
+
+`applyChangePlan` is the sole core effect boundary. The default failure policy
+stops later independent groups after a failure; `continue-independent` permits
+only groups whose dependencies succeeded. Results distinguish applied, failed,
+dependency-skipped, and policy-skipped groups and report whether any effects
+preceded a failure. Every adapter revalidates existence and exact opaque
+revisions immediately before effects. JSON applies one document group through a
+same-directory atomic replacement; filesystem changes validate a group before
+executing and advertise no rollback or compensation where none exists.
 
 ## 11. Query planning and execution
 
@@ -673,6 +708,12 @@ Default behavior:
 
 Saved plans MUST include enough adapter version, schema version, resource
 identity, and revision information to reject unsafe replay.
+
+The current saved-plan format records the exact schema version of every adapter,
+the URI and observed revision of every resource, and an integrity digest over
+the complete plan. Source content required for application remains in
+adapter-private payloads, while human rendering redacts sensitive previews by
+default.
 
 ## 14. Plugins
 
