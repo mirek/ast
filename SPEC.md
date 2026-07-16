@@ -395,6 +395,15 @@ consumed, and closes on completion, failure, cancellation, or early return.
 Mounted node identity combines the containing file identity with a source-order
 structural path and is stable only within the observed file revision.
 
+The Markdown adapter follows the same lazy file-mount lifecycle. Its default
+`markdown::syntax-tree` preserves source-order blocks; the explicit
+`markdown::section-tree` derives nested sections from heading levels. Selector
+compilation accepts a tree-view option and uses only that view's declared child
+edges. A JSON fenced block may expose a read-only `json::mount`; its JSON root
+references the `markdown::code-block`, and that block references the original
+filesystem file. Embedded-format edits must be expressed through the containing
+document adapter until it can map nested patches safely.
+
 ### 7.3 Adapter-specific operations
 
 Adapters publish typed operations such as:
@@ -828,8 +837,20 @@ The first useful release targets local, version-controlled repositories.
 3. Markdown
    - document structure, headings, sections, lists, links, code blocks, and
      frontmatter;
-   - heading-based section hierarchy as a semantic tree view;
-   - fenced-code mounting points.
+   - source-order syntax containment and heading-based section containment as
+     separate named tree views selected explicitly by queries;
+   - lazy filesystem mounts and read-only JSON fenced-code mounts with reference
+     paths through the code block to the original file;
+   - UTF-8 and UTF-8-with-BOM observations with UTF-16 offsets after the optional
+     BOM. No-op and localized heading/section edits preserve unrelated bytes,
+     newline style, frontmatter, and nested subsections;
+   - duplicate headings remain distinct source-order nodes. Skipped levels,
+     unclosed fences, and unclosed frontmatter produce ranged diagnostics;
+   - inline and reference links resolve to link nodes. Embedded HTML remains an
+     opaque paragraph instead of being normalized;
+   - the initial loss-aware parser recognizes YAML-delimited frontmatter, ATX
+     headings, flat ordered/unordered lists, paragraphs, links, and fenced code.
+     Unsupported Markdown constructs remain paragraph text.
 4. TypeScript
    - syntax tree projection;
    - symbol reference edges where compiler information is available;

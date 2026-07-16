@@ -8,6 +8,8 @@ import type {
   FilesystemWriteOperation,
   JsonChange,
   JsonValue,
+  MarkdownChange,
+  MarkdownSource,
   NodeSnapshot,
   PlanningCapability,
   ReadCapability,
@@ -17,10 +19,12 @@ import {
   applyChangePlan,
   createFilesystemAdapter,
   createJsonAdapter,
+  createMarkdownAdapter,
   fromFilesystem,
   fromValues,
   jsonReplaceValue,
   mountJson,
+  mountMarkdown,
   planOperations,
   project,
 } from "../src/index.js";
@@ -117,3 +121,17 @@ const planned = planOperations([
   },
 ]);
 void planned;
+
+const markdown = createMarkdownAdapter({ json });
+const markdownSource: MarkdownSource = {
+  uri: "README.md",
+  treeView: "markdown::section-tree",
+};
+void markdownSource;
+const mountedMarkdown = mountMarkdown(filesystemQuery, markdown);
+void mountedMarkdown;
+
+declare const markdownChange: MarkdownChange;
+const markdownKind: "markdown::set-heading" | "markdown::replace-section" =
+  markdownChange.kind;
+void markdownKind;

@@ -168,6 +168,39 @@ occurred. JSON document groups use an atomic local replacement. Filesystem
 groups report that rollback and compensation are unavailable rather than
 implying cross-file atomicity.
 
+## Markdown adapter
+
+`createMarkdownAdapter` exposes loss-aware syntax blocks and derived heading
+sections. Queries select either `markdown::syntax-tree` or
+`markdown::section-tree`; selector combinators then use that view's declared
+child edges.
+
+```ts
+const markdown = createMarkdownAdapter({ json });
+const sections = select(
+  markdown,
+  {
+    uri: "README.md",
+    options: { treeView: "markdown::section-tree" },
+  },
+  "markdown::document > markdown::section[level <= 2]",
+  { treeView: "markdown::section-tree" },
+);
+```
+
+`mountMarkdown` adds documents lazily beneath filesystem files. JSON fenced
+blocks can mount through the supplied JSON adapter without losing the path back
+to their code block and original file; embedded JSON is read-only, so edits are
+owned by Markdown. `markdownSetHeading` and `markdownReplaceSection` emit
+revision-guarded localized patches that compose in the explicit change-plan
+runtime.
+
+The initial parser handles YAML-delimited frontmatter, ATX headings, paragraphs,
+flat lists, inline and reference links, fenced code, and opaque HTML paragraphs.
+Duplicate headings retain distinct source-order identities. Skipped heading
+levels and unclosed fences/frontmatter produce ranged diagnostics. Unsupported
+constructs remain paragraph text, and no operation reformats unrelated source.
+
 ## Development
 
 Requires Node.js 24 or newer and pnpm 11 or newer.

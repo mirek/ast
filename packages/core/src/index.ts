@@ -80,6 +80,7 @@ export {
   jsonRemoveProperty,
   jsonReplaceValue,
   mountJson,
+  mountJsonTextHandle,
 } from "./json.js";
 export type {
   JsonAdapter,
@@ -97,8 +98,31 @@ export type {
   JsonRemovePropertyOperation,
   JsonReplaceValueOperation,
   JsonStatistics,
+  JsonTextMountSource,
   JsonValue,
 } from "./json.js";
+export {
+  createMarkdownAdapter,
+  fromMarkdown,
+  markdownReplaceSection,
+  markdownSetHeading,
+  mountMarkdown,
+} from "./markdown.js";
+export type {
+  MarkdownAdapter,
+  MarkdownAdapterOptions,
+  MarkdownChange,
+  MarkdownNodeKind,
+  MarkdownOperation,
+  MarkdownOperationKind,
+  MarkdownPatchPayload,
+  MarkdownPrecondition,
+  MarkdownReplaceSectionOperation,
+  MarkdownSetHeadingOperation,
+  MarkdownSource,
+  MarkdownStatistics,
+  MarkdownTreeView,
+} from "./markdown.js";
 export {
   assertNamespace,
   assertNamespacedName,
