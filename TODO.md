@@ -5,7 +5,6 @@ unless a prototype is explicitly intended to answer an earlier design question.
 When a task is complete, delete both its file and this index entry rather than
 marking it completed.
 
-- [TypeScript adapter](./todo/typescript-adapter.md) — expose syntax and symbol graphs plus a small semantic refactoring surface.
 - [Stabilize adapter contracts](./todo/stabilize-adapter-contracts.md) — revise the extension contracts using evidence from the required adapters.
 - [Textual DSL](./todo/textual-dsl.md) — compile a compact pipeline language into the proven TypeScript query algebra.
 - [CLI](./todo/cli.md) — expose query, plan, apply, explain, schema, and plugin workflows safely.

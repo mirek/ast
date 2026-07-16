@@ -10,6 +10,7 @@ import type {
   JsonValue,
   MarkdownChange,
   MarkdownSource,
+  TypeScriptChange,
   NodeSnapshot,
   PlanningCapability,
   ReadCapability,
@@ -20,11 +21,13 @@ import {
   createFilesystemAdapter,
   createJsonAdapter,
   createMarkdownAdapter,
+  createTypeScriptAdapter,
   fromFilesystem,
   fromValues,
   jsonReplaceValue,
   mountJson,
   mountMarkdown,
+  mountTypeScript,
   planOperations,
   project,
 } from "../src/index.js";
@@ -135,3 +138,10 @@ declare const markdownChange: MarkdownChange;
 const markdownKind: "markdown::set-heading" | "markdown::replace-section" =
   markdownChange.kind;
 void markdownKind;
+
+const typescript = createTypeScriptAdapter({ project: "tsconfig.json" });
+const mountedTypeScript = mountTypeScript(filesystemQuery, typescript);
+void mountedTypeScript;
+declare const typeScriptChange: TypeScriptChange;
+const typeScriptKind: "ts::rename-symbol" | "ts::replace-call" = typeScriptChange.kind;
+void typeScriptKind;

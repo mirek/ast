@@ -201,6 +201,35 @@ Duplicate headings retain distinct source-order identities. Skipped heading
 levels and unclosed fences/frontmatter produce ranged diagnostics. Unsupported
 constructs remain paragraph text, and no operation reformats unrelated source.
 
+## TypeScript adapter
+
+`createTypeScriptAdapter` projects immutable compiler syntax snapshots. With a
+`project` path it creates one cached language service for the configured files
+and exposes `ts::symbol` reference edges separately from `ts::children` syntax
+containment. Without a project, TypeScript and JavaScript remain queryable in
+syntax-only mode.
+
+```ts
+const typescript = createTypeScriptAdapter({ project: "tsconfig.json" });
+const calls = select(
+  typescript,
+  { uri: "src/index.ts" },
+  'ts::call[callee = "deprecatedApi"]',
+);
+```
+
+`mountTypeScript` adds source files lazily beneath filesystem files.
+`typeScriptRenameSymbol` uses compiler-proven rename locations across project
+files and does not rewrite equal comments or string literals.
+`typeScriptReplaceCall` replaces only the selected call expression's callee.
+Both operations produce revision-guarded, atomic per-file changes.
+
+The runtime adapter pins the stable TypeScript 5.9 compiler API; the workspace
+may use a newer compiler for its own build. Syntax errors have source ranges.
+Out-of-project files are explicitly syntax-only, generated declaration files
+are read-only, and project references are diagnosed as unsupported by the
+initial adapter instead of being loaded incompletely.
+
 ## Development
 
 Requires Node.js 24 or newer and pnpm 11 or newer.

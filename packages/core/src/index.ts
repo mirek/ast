@@ -201,6 +201,26 @@ export type {
   SelectorSequence,
   SelectorStep,
 } from "./selector.js";
+export {
+  createTypeScriptAdapter,
+  mountTypeScript,
+  typeScriptRenameSymbol,
+  typeScriptReplaceCall,
+} from "./typescript.js";
+export type {
+  TypeScriptAdapter,
+  TypeScriptAdapterOptions,
+  TypeScriptChange,
+  TypeScriptNodeKind,
+  TypeScriptOperation,
+  TypeScriptOperationKind,
+  TypeScriptPatch,
+  TypeScriptPatchPayload,
+  TypeScriptPrecondition,
+  TypeScriptRenameSymbolOperation,
+  TypeScriptReplaceCallOperation,
+  TypeScriptStatistics,
+} from "./typescript.js";
 export { defineAdapterSchema } from "./schema.js";
 export type {
   AdapterCapabilities,

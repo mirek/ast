@@ -404,6 +404,13 @@ references the `markdown::code-block`, and that block references the original
 filesystem file. Embedded-format edits must be expressed through the containing
 document adapter until it can map nested patches safely.
 
+The TypeScript adapter mounts `ts::source-file` beneath filesystem files and
+uses `ts::children` only for compiler syntax containment. In configured-project
+mode, `ts::symbol` is a separate reference edge from identifiers to compiler-
+proven declarations; it is never treated as a child edge. One cached language
+service supplies all files in a project. Without a configured project, files
+remain queryable in syntax-only mode and expose no invented symbol edges.
+
 ### 7.3 Adapter-specific operations
 
 Adapters publish typed operations such as:
@@ -852,9 +859,21 @@ The first useful release targets local, version-controlled repositories.
      headings, flat ordered/unordered lists, paragraphs, links, and fenced code.
      Unsupported Markdown constructs remain paragraph text.
 4. TypeScript
-   - syntax tree projection;
-   - symbol reference edges where compiler information is available;
-   - a small set of semantic refactor operations.
+   - immutable source-file, declaration, call, identifier, import, and generic
+     syntax snapshots with UTF-16 compiler source ranges;
+   - `ts::children` syntax containment and separate `ts::symbol` reference
+     edges where configured-project compiler information is available;
+   - lazy filesystem mounts and one reused TypeScript language service per
+     adapter/project rather than rebuilding a program per node or file;
+   - compiler-proven symbol rename across project files and localized call-
+     expression replacement. Both produce exact text previews, opaque revision
+     preconditions, and atomic per-file patches;
+   - syntax-only TypeScript and JavaScript remain queryable, including malformed
+     files with ranged syntax diagnostics. Files outside a configured project
+     receive an explicit informational diagnostic and no symbol claims;
+   - declaration files are projected with an explicit attribute and remain
+     read-only. Initial project references are diagnosed as unsupported rather
+     than being loaded partially or silently.
 
 YAML, TOML, Git, SQL, and remote-service adapters follow after the contracts
 have survived the required adapters.
