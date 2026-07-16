@@ -8,7 +8,8 @@ The repository contains the architecture specification, implementation backlog,
 and a buildable TypeScript monorepo. `@mirek/ast` provides immutable graph,
 resource, schema, diagnostic, and capability contracts plus an executable lazy
 query algebra, selector compiler, local filesystem adapter, and lazily mounted
-JSON document adapter. The CLI is not yet implemented.
+JSON, Markdown, and TypeScript document adapters, textual DSL, change planning,
+and the `ast` CLI.
 
 Read [SPEC.md](./SPEC.md) for the architecture and [TODO.md](./TODO.md) for the
 ordered set of work that remains.
@@ -20,7 +21,8 @@ ordered set of work that remains.
   available now, together with selector parsing, schema validation, and query
   compilation; the filesystem and JSON adapters provide lazy reads, nested
   mounts, and pure change planning
-- `@mirek/ast-cli` — CLI boundary reserved for later implementation
+- `@mirek/ast-cli` — executable boundary for querying, planning, explaining,
+  and explicitly applying changes
 
 Both packages remain private until their public names and contracts are
 stabilized.
@@ -259,6 +261,31 @@ inner equality joins, invocation, and terminal planning. It has no imports,
 modules, user functions, arbitrary code execution, loops, or recursion. Parser,
 selector, schema/type, capability, and planning diagnostics retain DSL source
 locations, and `formatDsl` is deterministic.
+
+## CLI
+
+`@mirek/ast-cli` provides the `ast` executable:
+
+```sh
+ast query query.dsl
+ast plan transform.dsl --save plan.json
+ast apply plan.json --yes --allow-destructive
+ast explain query.dsl
+ast schema json
+ast plugins
+```
+
+Piped queries emit stable JSON Lines on stdout and diagnostics as separate JSON
+Lines on stderr. Terminals default to readable indented values and redacted plan
+diffs. Planning cannot apply. Apply never prompts in automation and requires
+explicit confirmation plus risk acknowledgements. Flags override `AST_*`
+environment settings, which override `.astrc.json`.
+
+Exit codes distinguish usage (1), diagnostics (2), invalid plans (3), missing
+confirmation (4), apply failure (5), and cancellation (130). SIGINT propagates
+through query/apply cancellation. Rendered values redact conventional secret,
+token, password, credential, and API-key fields. Explicitly saved plans contain
+private adapter payloads and should be treated as sensitive files.
 
 ## Development
 

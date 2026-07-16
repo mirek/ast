@@ -3,5 +3,6 @@
   "compilerOptions": {
     "tsBuildInfoFile": ".tsbuildinfo"
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "references": [{ "path": "../core/tsconfig.build.json" }]
 }
