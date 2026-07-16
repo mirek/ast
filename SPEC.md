@@ -580,11 +580,48 @@ from fs(".")
 | sort file, line
 ```
 
-The exact grammar remains provisional until the TypeScript query algebra has
-been validated by multiple adapters.
+The grammar below follows the TypeScript algebra validated across the required
+local adapters; additions must preserve compilation to that same algebra.
 
-The initial pipeline operations SHOULD include `select`, `where`, `project`,
-`flatMap`, `distinct`, `sort`, `take`, `count`, `group`, and `join`.
+The initial textual pipeline includes `select`, `where`, `project`, `distinct`,
+`sort`, `take`, `count`, and equality `join`. The TypeScript algebra additionally
+retains callback-based `flatMap` and `groupBy`.
+
+The validated initial textual grammar is expression-only:
+
+```text
+program     := ("let" name "=" pipeline ";")* pipeline
+pipeline    := from-step ("|" step)*
+from-step   := "from" name "(" literal-list? ")"
+step        := "mount" name
+             | "select" quoted-selector
+             | "where" expression comparison expression
+             | "where" expression "is" ("null" | "missing")
+             | "project" "{" projection-list? "}"
+             | "distinct" | "sort" name-list | "take" integer | "count"
+             | "join" name "on" expression "=" expression
+             | "invoke" namespaced-name "{" argument-list? "}"
+             | "plan"
+expression  := literal | "@" path | "$" name ("." path)?
+```
+
+Literals are quoted strings with explicit escapes, finite numbers, `bigint`
+literals, booleans, and `null`. Selectors retain their existing regular-
+expression, null, missing, and capture syntax. `@path` reads the current node or
+derived value; `$capture.path` reads a selector capture; `$left` and `$right`
+address equality-join members. Bindings are lexical query values, cannot be
+recursive or effectful, and must precede their use. Joins are inner equality
+joins from the existing query algebra.
+
+`invoke` must be followed immediately by terminal `plan`. Source, mount, and
+operation names are resolved only through an explicit compile environment.
+There are deliberately no imports, modules, user functions, loops, arbitrary
+code evaluation, general recursion, or privileged execution path. Operations
+not representable through declarative scalar expressions, including general
+`flatMap` and grouping callbacks, remain TypeScript-API-only until proven syntax
+exists. Formatting is deterministic and preserves a source span for every
+binding, pipeline, and step. Nested selector diagnostics are translated back to
+their containing DSL spans.
 
 ## 10. Transformations
 

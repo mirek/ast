@@ -1,7 +1,7 @@
 ---
 title: Implement the command-line interface
 summary: Provide safe query, planning, application, explanation, schema, and plugin workflows over the library API.
-depends_on: [textual-dsl]
+depends_on: []
 spec_sections: [13, 15, 16, 17.2]
 ---
 

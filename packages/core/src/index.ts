@@ -51,6 +51,17 @@ export type {
   DiagnosticLocation,
   DiagnosticSeverity,
 } from "./diagnostic.js";
+export { DslError, compileDsl, formatDsl, parseDsl } from "./dsl.js";
+export type {
+  CompiledDsl,
+  DslBinding,
+  DslEnvironment,
+  DslExpression,
+  DslOptions,
+  DslPipeline,
+  DslProgram,
+  DslStep,
+} from "./dsl.js";
 export {
   createFilesystemAdapter,
   filesystemCreate,
@@ -190,7 +201,7 @@ export type {
   QueryOperator,
   TraverseOptions,
 } from "./query.js";
-export { SelectorError, parseSelector, select, validateSelector } from "./selector.js";
+export { SelectorError, parseSelector, select, selectFrom, validateSelector } from "./selector.js";
 export type {
   SelectorAttributePredicate,
   SelectorCaptureReference,

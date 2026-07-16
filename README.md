@@ -239,6 +239,27 @@ cleanup, tree views, hydration, edges, planning, apply, diagnostics, and nested
 mount opening are stable focused capabilities. Adapter statistics, native query
 compilation, cost estimates, and watching remain provisional.
 
+## Textual DSL
+
+`parseDsl`, `formatDsl`, and `compileDsl` provide a declarative pipeline surface
+over the same `Query`, selector, operation, and change-plan values used by the
+TypeScript API. A compile environment explicitly supplies named sources, mounts,
+and adapter operation constructors.
+
+```text
+from ts("src/index.ts")
+| select 'ts::call[callee = "deprecatedApi"]'
+| invoke ts::replace-call { callee: "replacementApi" }
+| plan
+```
+
+The initial grammar supports lexical query bindings, sources, mounts, selectors,
+typed filters, projections, captures, distinctness, sorting, limits, counts,
+inner equality joins, invocation, and terminal planning. It has no imports,
+modules, user functions, arbitrary code execution, loops, or recursion. Parser,
+selector, schema/type, capability, and planning diagnostics retain DSL source
+locations, and `formatDsl` is deterministic.
+
 ## Development
 
 Requires Node.js 24 or newer and pnpm 11 or newer.
