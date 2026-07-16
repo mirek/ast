@@ -749,15 +749,16 @@ API. Neither interface receives privileged runtime behavior.
 The CLI SHOULD support:
 
 ```text
-ung query <program> [sources...]
-ung plan <program> [sources...]
-ung apply <program-or-plan> [sources...]
-ung explain <program> [sources...]
-ung schema <namespace>
-ung plugins
+ast query <program>
+ast plan <program> [--save plan.json]
+ast apply <program-or-plan> --yes [risk acknowledgements]
+ast explain <program>
+ast schema <namespace>
+ast plugins
 ```
 
-`ung` is a placeholder executable name.
+The executable and product name is `ast`; the package remains
+`@mirek/ast-cli` while private.
 
 Default behavior:
 
@@ -768,6 +769,25 @@ Default behavior:
 - destructive and irreversible changes are summarized separately;
 - diagnostics include DSL locations and source origins;
 - secrets and connection values are redacted.
+
+Non-terminal query output is stable JSON Lines: data uses stdout and diagnostics
+use stderr. Terminals default to indented readable output, while plan previews
+use risk labels and redacted text diffs. `--format` overrides `AST_FORMAT`, which
+overrides `.astrc.json`, then terminal-sensitive defaults. `NO_COLOR` overrides
+color configuration; the initial renderer emits no ANSI color.
+
+`plan` only previews and optionally saves. Non-interactive apply never prompts
+and requires `--yes`, plus `--allow-destructive` or `--allow-irreversible` for
+those risks. Saved-plan envelopes are recognized strictly and cannot fall back
+to DSL after integrity or compatibility failure. SIGINT cancels through an
+`AbortSignal` and exits 130.
+
+Exit statuses are 0 success, 1 usage/configuration, 2 execution or diagnostic
+error, 3 invalid plan, 4 missing confirmation/policy acknowledgement, 5 apply
+failure, and 130 cancellation. Query warnings may accompany successful data;
+errors retain streamed output but return 2. Rendered values redact conventional
+secret/key fields. Explicit saved-plan files contain adapter-private payloads
+and MUST be handled as sensitive artifacts.
 
 Saved plans MUST include enough adapter version, schema version, resource
 identity, and revision information to reject unsafe replay.
