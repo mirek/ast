@@ -1,7 +1,7 @@
 ---
 title: Add graph-relative projection to the textual DSL
 summary: Make repository inventory and similar structured extraction expressible without host callbacks.
-depends_on: [cross-adapter-mounted-selectors]
+depends_on: []
 spec_sections: [9.5, 9.7, 12, 18.1]
 ---
 
@@ -12,10 +12,11 @@ cardinality, missing-value, and ordering semantics.
 
 # Finding
 
-The repository inventory example uses `child("name").value` and
-`child("dependencies")`, but the executable DSL expression grammar accepts
-only literals and current/capture paths. The example is not parseable, and the
-CLI cannot directly produce its promised package/dependency structure.
+The repository inventory selector now crosses `fs::file > json::root`, but its
+projection uses `child("name").value` and `child("dependencies")` while the
+executable DSL expression grammar accepts only literals and current/capture
+paths. The example is not parseable, and the CLI cannot directly produce its
+promised package/dependency structure.
 
 # Scope
 

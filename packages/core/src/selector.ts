@@ -22,6 +22,7 @@ import {
 import type { AdapterSchema, AttributeSchema, NodeKindSchema, ScalarType } from "./schema.js";
 
 export type SelectorSourceMode = "roots" | "selection";
+export type SelectorSchema = AdapterSchema | readonly AdapterSchema[];
 
 export interface SelectorOptions {
   readonly uri?: string;
@@ -551,6 +552,59 @@ const includesType = (schema: AttributeSchema, type: ScalarType): boolean =>
 const kindSchema = (schema: AdapterSchema, name: string | undefined): NodeKindSchema | undefined =>
   name === undefined ? undefined : schema.kinds.find(({ kind }) => kind === name);
 
+const compositeParts = new WeakMap<AdapterSchema, readonly AdapterSchema[]>();
+const uniqueNamed = <Value extends { readonly name: string }>(values: readonly Value[]): readonly Value[] =>
+  [...new Map(values.map((value) => [value.name, value])).values()];
+
+const resolveSelectorSchema = (value: SelectorSchema): AdapterSchema => {
+  const schemas = Array.isArray(value) ? value as readonly AdapterSchema[] : [value as AdapterSchema];
+  if (schemas.length === 0) throw new TypeError("Selector schema list must not be empty.");
+  if (schemas.length === 1) return schemas[0] as AdapterSchema;
+  const childEdges = uniqueNamed(schemas.flatMap((schema) => {
+    const tree = schema.treeViews.find(({ default: isDefault }) => isDefault === true) ?? schema.treeViews[0];
+    const names = tree?.childEdges ?? schema.edges.filter(({ role }) => role === "child").map(({ name }) => name);
+    return names.map((name) => ({ name }));
+  })).map(({ name }) => name as EdgeName);
+  const schema: AdapterSchema = Object.freeze({
+    dynamic: true,
+    namespace: "composite",
+    version: schemas.map(({ namespace, version }) => `${namespace}@${version}`).join("+"),
+    kinds: Object.freeze(schemas.flatMap(({ kinds }) => kinds)),
+    edges: Object.freeze(uniqueNamed(schemas.flatMap(({ edges }) => edges))),
+    operations: Object.freeze(schemas.flatMap(({ operations }) => operations)),
+    treeViews: Object.freeze([{
+      name: "composite::mounted-tree" as NamespacedName,
+      rootKinds: Object.freeze(schemas.flatMap(({ treeViews }) =>
+        (treeViews.find(({ default: isDefault }) => isDefault === true) ?? treeViews[0])?.rootKinds ?? [])),
+      childEdges: Object.freeze(childEdges),
+      default: true,
+    }, ...schemas.flatMap(({ treeViews }) => treeViews.map(({ name, rootKinds, childEdges: edges }) => ({
+      name,
+      rootKinds,
+      childEdges: edges,
+    })))]),
+    capabilities: Object.freeze({
+      traversal: Object.freeze([...new Set(schemas.flatMap(({ capabilities }) => capabilities.traversal))]),
+      pushdown: Object.freeze([]),
+      ordering: schemas.every(({ capabilities }) => capabilities.ordering === "stable") ? "stable" : "unknown",
+      revisions: schemas.every(({ capabilities }) => capabilities.revisions),
+      transactions: "none",
+    }),
+  });
+  compositeParts.set(schema, Object.freeze([...schemas]));
+  return schema;
+};
+
+const responsibleSchema = (schema: AdapterSchema, name: string): AdapterSchema | undefined => {
+  const namespace = name.slice(0, name.indexOf("::"));
+  return (compositeParts.get(schema) ?? [schema]).find((candidate) => candidate.namespace === namespace);
+};
+
+const schemaSuffix = (schema: AdapterSchema, name: string): string => {
+  const responsible = responsibleSchema(schema, name);
+  return responsible === undefined ? " across mounted schemas" : ` in schema ${responsible.namespace}`;
+};
+
 const attributeSchema = (
   schema: AdapterSchema,
   kind: NodeKindSchema | undefined,
@@ -642,7 +696,7 @@ const validateCompound = (
   const selectedKind = kindSchema(schema, compound.kind);
   if (compound.kind !== undefined && selectedKind === undefined) {
     throw new SelectorError([
-      diagnostic("selector.unknown-kind", `Unknown node kind ${compound.kind}.`, uri, compound.range),
+      diagnostic("selector.unknown-kind", `Unknown node kind ${compound.kind}${schemaSuffix(schema, compound.kind)}.`, uri, compound.range),
     ]);
   }
 
@@ -652,7 +706,7 @@ const validateCompound = (
       throw new SelectorError([
         diagnostic(
           "selector.unknown-attribute",
-          `Unknown attribute ${JSON.stringify(predicate.attribute)}.`,
+          `Unknown attribute ${JSON.stringify(predicate.attribute)}${compound.kind === undefined ? "" : schemaSuffix(schema, compound.kind)}.`,
           uri,
           predicate.range,
         ),
@@ -714,7 +768,7 @@ const validateCombinator = (
     validateName(combinator.name, "Edge", uri, combinator.range);
     if (!schema.edges.some(({ name }) => name === combinator.name)) {
       throw new SelectorError([
-        diagnostic("selector.unknown-edge", `Unknown edge ${combinator.name}.`, uri, combinator.range),
+        diagnostic("selector.unknown-edge", `Unknown edge ${combinator.name}${schemaSuffix(schema, combinator.name)}.`, uri, combinator.range),
       ]);
     }
   }
@@ -747,8 +801,9 @@ const validateSequence = (
   }
 };
 
-export const validateSelector = (program: SelectorProgram, schema: AdapterSchema): void => {
-  for (const sequence of program.selectors) validateSequence(sequence, schema, new Map(), program.uri);
+export const validateSelector = (program: SelectorProgram, schema: SelectorSchema): void => {
+  const resolved = resolveSelectorSchema(schema);
+  for (const sequence of program.selectors) validateSequence(sequence, resolved, new Map(), program.uri);
 };
 
 const childEdges = (
@@ -964,6 +1019,7 @@ const applyCompound = (
   ambient: CaptureMap = {},
   treeView?: NamespacedName,
 ): Query<NavigableNodeHandle, CaptureMap> => {
+  const transition = compositeParts.get(schema)?.map(({ namespace }) => namespace).join(" -> ");
   let result = query.filter(
     (node, captures, options) =>
       matchesCompound(
@@ -974,7 +1030,7 @@ const applyCompound = (
         options,
         treeView,
       ),
-    "selector predicate",
+    transition === undefined ? "selector predicate" : `selector predicate (${transition})`,
   );
   for (const { name } of compound.captures) {
     result = result.capture(name) as Query<NavigableNodeHandle, CaptureMap>;
@@ -1042,22 +1098,29 @@ export const select = (
 
 export const selectFrom = (
   source: Query<NavigableNodeHandle, CaptureMap>,
-  schema: AdapterSchema,
+  schema: SelectorSchema,
   selector: string | SelectorProgram,
   options: SelectorOptions = {},
 ): Query<NavigableNodeHandle, CaptureMap> => {
+  const resolvedSchema = resolveSelectorSchema(schema);
   const program = typeof selector === "string" ? parseSelector(selector, options) : selector;
-  validateSelector(program, schema);
-  const roots = options.sourceMode === "selection"
+  validateSelector(program, resolvedSchema);
+  const sequence = program.selectors[0];
+  const parts = compositeParts.get(resolvedSchema);
+  const firstKind = sequence?.steps[0]?.compound.kind;
+  const anchorsContainer = parts !== undefined
+    && firstKind !== undefined
+    && responsibleSchema(resolvedSchema, firstKind) === parts[0]
+    && sequence?.leading === undefined;
+  const roots = options.sourceMode === "selection" || anchorsContainer
     ? source
     : source.traverse({
-        edgeNames: childEdges(schema, options.treeView),
+        edgeNames: childEdges(resolvedSchema, options.treeView),
         roles: ["child"],
         maxDepth: Number.MAX_SAFE_INTEGER,
         includeSelf: true,
       });
-  const sequence = program.selectors[0];
   return sequence === undefined
     ? roots.take(0)
-    : compileSequence(roots, sequence, schema, options.treeView);
+    : compileSequence(roots, sequence, resolvedSchema, options.treeView);
 };

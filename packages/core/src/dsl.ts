@@ -6,7 +6,7 @@ import type { Diagnostic } from "./diagnostic.js";
 import { immutableCopy } from "./immutable.js";
 import type { Scalar, SourceRange } from "./model.js";
 import type { CaptureMap, NavigableNodeHandle, Query } from "./query.js";
-import type { Cardinality, ScalarType } from "./schema.js";
+import type { AdapterSchema, Cardinality, ScalarType } from "./schema.js";
 import { SelectorError, selectFrom } from "./selector.js";
 import type { SelectorSourceMode } from "./selector.js";
 
@@ -595,6 +595,7 @@ const parseProjection = (step: DslStep, program: DslProgram): readonly { readonl
 interface PipelineState {
   readonly query: Query<unknown, CaptureMap>;
   readonly adapter?: Adapter;
+  readonly selectorSchemas?: readonly AdapterSchema[];
   readonly selectorSource?: SelectorSourceMode;
   readonly invocation?: {
     readonly step: DslStep;
@@ -661,6 +662,7 @@ const compilePipeline = (
   let state: PipelineState = {
     query: source.open(sourceArguments) as Query<unknown, CaptureMap>,
     adapter: source.adapter,
+    selectorSchemas: Object.freeze([source.adapter.schema]),
     selectorSource: source.selectorSource,
   };
   for (const step of pipeline.steps) {
@@ -682,6 +684,7 @@ const compilePipeline = (
           mountArguments,
         ) as Query<unknown, CaptureMap>,
         adapter: mount.adapter,
+        selectorSchemas: Object.freeze([...(state.selectorSchemas ?? []), mount.adapter.schema]),
         selectorSource: "roots",
       };
       continue;
@@ -695,11 +698,12 @@ const compilePipeline = (
         state = {
           query: selectFrom(
             state.query as Query<NavigableNodeHandle, CaptureMap>,
-            state.adapter.schema,
+            state.selectorSchemas ?? [state.adapter.schema],
             selector,
             { uri: program.uri, sourceMode: state.selectorSource ?? "roots" },
           ) as Query<unknown, CaptureMap>,
           adapter: state.adapter,
+          ...(state.selectorSchemas === undefined ? {} : { selectorSchemas: state.selectorSchemas }),
           selectorSource: "roots",
         };
       } catch (error) {

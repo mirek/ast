@@ -5,7 +5,6 @@ unless a prototype is explicitly intended to answer an earlier design question.
 When a task is complete, delete both its file and this index entry rather than
 marking it completed.
 
-- [Support selectors across mounted adapter boundaries](./todo/cross-adapter-mounted-selectors.md) — validate and execute selectors that cross container-to-mount edges.
 - [Expose the complete filesystem transformation surface in the CLI](./todo/filesystem-cli-transformations.md) — add move, remove, create, and encoded writes.
 - [Expose Markdown tree views in textual queries](./todo/markdown-tree-view-dsl.md) — make syntax and section containment selectable through DSL and CLI.
 - [Add configured-project TypeScript workflows to the CLI](./todo/typescript-project-cli.md) — expose symbol edges and semantic rename with an explicit project.
