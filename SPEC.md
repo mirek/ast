@@ -632,10 +632,28 @@ step        := "mount" name "(" argument-object? ")"
              | "invoke" namespaced-name "{" argument-list? "}"
              | "plan"
 expression  := literal | "@" path | "$" name ("." path)?
+             | (name | namespaced-name) "(" expression-list? ")"
 argument-object := "{" argument-list? "}"
 argument-list   := name ":" argument-value ("," name ":" argument-value)*
 argument-value  := literal | "[" literal-list? "]"
 ```
+
+Admitted plugin selector predicates use the closed pseudo form
+`":" (name | namespaced-name) "(" literal-list? ")"`. Predicate
+contributions declare positional scalar parameter types and receive one
+immutable node snapshot plus validated literals. Scalar functions declare
+positional scalar parameter types and one scalar return type. Both callback
+kinds are synchronous, deterministic, and side-effect-free. Missing values do
+not coerce to `null`; they fail parameter validation, as do other arity or type
+mismatches. Promise returns, wrong return types, and exceptions produce
+source-located `plugin.query-extension-failed` diagnostics.
+
+Aliases resolve before execution, while physical explanations retain canonical
+contribution names on ordinary runtime filters or projections. Plugin callbacks
+are never adapter-native pushdown. They execute lazily when a row is demanded,
+observe cancellation between rows through the surrounding algebra, receive no
+cancellation/effect authority of their own, and have no generic argument
+logging path.
 
 Literals are quoted strings with explicit escapes, finite numbers, `bigint`
 literals, booleans, and `null`. Selectors retain their existing regular-
@@ -990,6 +1008,13 @@ guessing from the returned query.
 Resolver and mount contributions use the same serializable named-argument
 schema as built-ins. Plugin registration rejects malformed schemas before an
 alias can expose the contribution.
+
+Predicate and scalar-function contributions require closed scalar signatures.
+Selector predicates are called as pseudos such as
+`:package::predicate("argument")`; DSL scalar functions are expressions such
+as `package::function(@name)`. Configured aliases may replace the call name,
+but explanations retain the canonical name. These synchronous callbacks are
+runtime operators and never optimizer pushdowns.
 
 Every contribution name is namespace-owned. Runtime-loaded schemas MUST declare
 `dynamic: true`, pass the normal schema validation, and exactly match the schema

@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import {
   DslError,
   PluginError,
+  SelectorError,
   adapterCompatibility,
   applyChangePlan,
   compileDsl,
@@ -759,6 +760,8 @@ const createRuntime = async (config: ResolvedCliConfig, cwd: string) => {
     sources: mergeEnvironment("source", builtInSources, plugins.dslEnvironment.sources),
     mounts: mergeEnvironment("mount", builtInMounts, plugins.dslEnvironment.mounts ?? {}),
     operations: mergeEnvironment("operation", builtInOperations, plugins.dslEnvironment.operations ?? {}),
+    predicates: plugins.dslEnvironment.predicates ?? {},
+    functions: plugins.dslEnvironment.functions ?? {},
   };
   const schemas = Object.freeze(Object.fromEntries([
     ...builtInAdapters.map((adapter) => [adapter.namespace, adapter.schema] as const),
@@ -1025,7 +1028,7 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
       io.stderr.write(line({ type: "diagnostic", value: { code: error.code, severity: "error", message: error.message } }));
       return EXIT.usage;
     }
-    if (error instanceof DslError) for (const value of error.diagnostics) emitDiagnostic(io, value);
+    if (error instanceof DslError || error instanceof SelectorError) for (const value of error.diagnostics) emitDiagnostic(io, value);
     else if (error instanceof PluginError) io.stderr.write(line({ type: "diagnostic", value: { code: error.code, severity: "error", message: error.message } }));
     else io.stderr.write(line({ type: "diagnostic", value: { code: "cli.error", severity: "error", message: error instanceof Error ? error.message : "Unknown CLI failure." } }));
     return EXIT.diagnostic;

@@ -4,9 +4,9 @@ import { defineDslArgumentSchema } from "./dsl.js";
 import type { DslArguments, DslArgumentSchema, DslEnvironment } from "./dsl.js";
 import { immutableCopy } from "./immutable.js";
 import { assertNamespace, assertNamespacedName } from "./model.js";
-import type { NamespacedName, Scalar } from "./model.js";
+import type { NamespacedName, NodeSnapshot, Scalar } from "./model.js";
 import type { CaptureMap, NavigableNodeHandle, Query } from "./query.js";
-import type { AdapterSchema } from "./schema.js";
+import type { AdapterSchema, ScalarType } from "./schema.js";
 import { defineAdapterSchema } from "./schema.js";
 import type { SelectorSourceMode } from "./selector.js";
 
@@ -72,11 +72,14 @@ export interface PluginOperationContribution {
 
 export interface PluginPredicateContribution {
   readonly name: NamespacedName;
-  test(value: unknown, args: readonly Scalar[]): boolean;
+  readonly parameters: readonly ScalarType[];
+  test(value: NodeSnapshot, args: readonly Scalar[]): boolean;
 }
 
 export interface PluginFunctionContribution {
   readonly name: NamespacedName;
+  readonly parameters: readonly ScalarType[];
+  readonly returns: ScalarType;
   call(args: readonly Scalar[]): Scalar;
 }
 
@@ -380,8 +383,29 @@ export const registerPlugins = (
       if (!normalized.adapter.schema.operations.some(({ kind }) => kind === normalized.name)) fail("plugin.unknown-operation", `Plugin operation ${normalized.name} is absent from its schema.`);
       return normalized;
     }));
-    predicates.push(...(module.contributions.predicates ?? []));
-    functions.push(...(module.contributions.functions ?? []));
+    const scalarTypes = new Set<ScalarType>(["string", "number", "boolean", "bigint", "null"]);
+    const validateParameters = (label: string, value: {
+      readonly name: NamespacedName;
+      readonly parameters: readonly ScalarType[];
+    }): void => {
+      if (!manifest.namespaces.includes(owner(value.name))) {
+        fail("plugin.foreign-namespace", `Plugin ${label} ${value.name} uses an undeclared namespace.`);
+      }
+      if (!Array.isArray(value.parameters) || value.parameters.some((type) => !scalarTypes.has(type))) {
+        fail("plugin.invalid-query-extension", `Plugin ${label} ${value.name} has invalid scalar parameters.`);
+      }
+    };
+    predicates.push(...(module.contributions.predicates ?? []).map((value) => {
+      validateParameters("predicate", value);
+      return Object.freeze({ ...value, parameters: Object.freeze([...value.parameters]) });
+    }));
+    functions.push(...(module.contributions.functions ?? []).map((value) => {
+      validateParameters("function", value);
+      if (!scalarTypes.has(value.returns)) {
+        fail("plugin.invalid-query-extension", `Plugin function ${value.name} has an invalid scalar return type.`);
+      }
+      return Object.freeze({ ...value, parameters: Object.freeze([...value.parameters]) });
+    }));
     renderers.push(...(module.contributions.renderers ?? []));
     diffProviders.push(...(module.contributions.diffProviders ?? []));
     for (const rule of module.contributions.optimizerRules ?? []) {
@@ -416,6 +440,14 @@ export const registerPlugins = (
     sources: Object.freeze(Object.fromEntries(Object.entries(aliases.sources).map(([alias, target]) => [alias, resolverRecord[target]]))) as DslEnvironment["sources"],
     mounts: Object.freeze(Object.fromEntries(Object.entries(aliases.mounts).map(([alias, target]) => [alias, mountRecord[target]]))) as NonNullable<DslEnvironment["mounts"]>,
     operations: Object.freeze(Object.fromEntries(Object.entries(aliases.operations).map(([alias, target]) => [alias, operationRecord[target]]))) as NonNullable<DslEnvironment["operations"]>,
+    predicates: Object.freeze({
+      ...predicateRecord,
+      ...Object.fromEntries(Object.entries(aliases.predicates).map(([alias, target]) => [alias, predicateRecord[target]])),
+    }),
+    functions: Object.freeze({
+      ...functionRecord,
+      ...Object.fromEntries(Object.entries(aliases.functions).map(([alias, target]) => [alias, functionRecord[target]])),
+    }),
   });
   return Object.freeze({
     plugins: Object.freeze(manifests),

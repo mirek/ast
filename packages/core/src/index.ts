@@ -85,6 +85,7 @@ export type {
   DslOptions,
   DslPipeline,
   DslProgram,
+  DslScalarFunction,
   DslStep,
 } from "./dsl.js";
 export {
@@ -236,6 +237,7 @@ export type {
   SelectorLiteral,
   SelectorOperand,
   SelectorOptions,
+  SelectorExtensionPredicate,
   SelectorProgram,
   SelectorPseudo,
   SelectorRegularExpression,

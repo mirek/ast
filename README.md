@@ -460,6 +460,24 @@ package. Plugin rows include package identity, trust/isolation, required and
 approved powers, namespaces, aliases, all manifest contribution lists, and any
 adapter compatibility rows, so presentation-only packages remain visible.
 
+Admitted plugin predicates and scalar functions are executable through closed,
+typed calls. Predicates are selector pseudos with literal arguments; functions
+are DSL expressions and may consume node or capture values:
+
+```text
+from demo()
+| select 'example::item:minimum(1)'
+| project { doubled: twice(@index) }
+```
+
+Contributions declare positional scalar parameter types, and functions also
+declare one scalar return type. Calls are synchronous deterministic runtime
+filters/projections: aliases resolve before execution, explanations show the
+canonical name, and they are never reported as adapter pushdown. Unknown,
+ill-typed, asynchronous, throwing, or wrong-return callbacks fail with
+source-located diagnostics. Missing and `null` remain distinct and are never
+implicitly coerced.
+
 Exit codes distinguish usage (1), diagnostics and file-read failures (2),
 invalid plans (3), missing confirmation (4), apply failure (5), and
 cancellation (130). SIGINT propagates through standard-input reads and

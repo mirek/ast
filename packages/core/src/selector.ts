@@ -28,6 +28,13 @@ export interface SelectorOptions {
   readonly uri?: string;
   readonly treeView?: NamespacedName;
   readonly sourceMode?: SelectorSourceMode;
+  readonly predicates?: Readonly<Record<string, SelectorExtensionPredicate>>;
+}
+
+export interface SelectorExtensionPredicate {
+  readonly name: NamespacedName;
+  readonly parameters: readonly ScalarType[];
+  test(value: NodeHandle["snapshot"], args: readonly Scalar[]): boolean;
 }
 
 export type SelectorCombinator =
@@ -98,11 +105,18 @@ export type SelectorAttributePredicate =
       readonly range: SourceRange;
     };
 
-export interface SelectorPseudo {
-  readonly kind: "not" | "is" | "has";
-  readonly selectors: readonly SelectorSequence[];
-  readonly range: SourceRange;
-}
+export type SelectorPseudo =
+  | {
+      readonly kind: "not" | "is" | "has";
+      readonly selectors: readonly SelectorSequence[];
+      readonly range: SourceRange;
+    }
+  | {
+      readonly kind: "extension";
+      readonly name: string;
+      readonly arguments: readonly SelectorLiteral[];
+      readonly range: SourceRange;
+    };
 
 export interface SelectorCompound {
   readonly kind?: string;
@@ -326,12 +340,23 @@ class Parser {
   #parsePseudo(): SelectorPseudo {
     const start = this.#index;
     this.#index += 1;
-    const name = this.#parseSimpleName();
-    if (name !== "not" && name !== "is" && name !== "has") {
-      this.#fail("selector.unknown-predicate", `Unknown selector predicate :${name}.`, start);
-    }
+    const name = this.#parseQualifiedName();
     this.#expect("(", `Expected \`(\` after :${name}.`);
     this.#skipWhitespace();
+    if (name !== "not" && name !== "is" && name !== "has") {
+      const args: SelectorLiteral[] = [];
+      if (this.#peek() !== ")") {
+        while (true) {
+          args.push(this.#parseLiteral());
+          this.#skipWhitespace();
+          if (this.#peek() !== ",") break;
+          this.#index += 1;
+          this.#skipWhitespace();
+        }
+      }
+      this.#expect(")", `Expected \`)\` after :${name}.`);
+      return { kind: "extension", name, arguments: args, range: { start, end: this.#index } };
+    }
     const selectors = this.#parseSelectorList(name === "has");
     if (selectors.length === 0) {
       this.#fail("selector.syntax", `:${name} requires at least one selector.`, start);
@@ -691,6 +716,7 @@ const validateCompound = (
   schema: AdapterSchema,
   captures: Map<string, CaptureType>,
   uri: string,
+  extensions: Readonly<Record<string, SelectorExtensionPredicate>>,
 ): void => {
   if (compound.kind !== undefined) validateName(compound.kind, "Kind", uri, compound.range);
   const selectedKind = kindSchema(schema, compound.kind);
@@ -744,8 +770,21 @@ const validateCompound = (
   }
 
   for (const pseudo of compound.pseudos) {
+    if (pseudo.kind === "extension") {
+      const extension = extensions[pseudo.name];
+      if (extension === undefined) {
+        throw new SelectorError([diagnostic("selector.unknown-predicate", `Unknown selector predicate :${pseudo.name}.`, uri, pseudo.range)]);
+      }
+      if (
+        extension.parameters.length !== pseudo.arguments.length ||
+        pseudo.arguments.some(({ value }, index) => scalarTypeOf(value) !== extension.parameters[index])
+      ) {
+        throw new SelectorError([diagnostic("selector.predicate-arguments", `Selector predicate ${extension.name} received ill-typed arguments.`, uri, pseudo.range)]);
+      }
+      continue;
+    }
     for (const sequence of pseudo.selectors) {
-      validateSequence(sequence, schema, new Map(captures), uri);
+      validateSequence(sequence, schema, new Map(captures), uri, extensions);
     }
   }
 
@@ -793,17 +832,22 @@ const validateSequence = (
   schema: AdapterSchema,
   captures: Map<string, CaptureType>,
   uri: string,
+  extensions: Readonly<Record<string, SelectorExtensionPredicate>>,
 ): void => {
   if (sequence.leading !== undefined) validateCombinator(sequence.leading, schema, uri);
   for (const step of sequence.steps) {
     if (step.combinator !== undefined) validateCombinator(step.combinator, schema, uri);
-    validateCompound(step.compound, schema, captures, uri);
+    validateCompound(step.compound, schema, captures, uri, extensions);
   }
 };
 
-export const validateSelector = (program: SelectorProgram, schema: SelectorSchema): void => {
+export const validateSelector = (
+  program: SelectorProgram,
+  schema: SelectorSchema,
+  predicates: Readonly<Record<string, SelectorExtensionPredicate>> = {},
+): void => {
   const resolved = resolveSelectorSchema(schema);
-  for (const sequence of program.selectors) validateSequence(sequence, resolved, new Map(), program.uri);
+  for (const sequence of program.selectors) validateSequence(sequence, resolved, new Map(), program.uri, predicates);
 };
 
 const childEdges = (
@@ -986,10 +1030,30 @@ const matchesCompound = async (
   schema: AdapterSchema,
   options: ExecuteOptions,
   treeView?: NamespacedName,
+  extensions: Readonly<Record<string, SelectorExtensionPredicate>> = {},
+  uri = "selector:runtime",
 ): Promise<boolean> => {
   if (compound.kind !== undefined && node.snapshot.kind !== compound.kind) return false;
   if (!compound.attributes.every((predicate) => matchesAttribute(node, predicate, captures))) return false;
   for (const pseudo of compound.pseudos) {
+    if (pseudo.kind === "extension") {
+      const extension = extensions[pseudo.name];
+      if (extension === undefined) return false;
+      try {
+        const result: unknown = extension.test(node.snapshot, pseudo.arguments.map(({ value }) => value));
+        if (result instanceof Promise) throw new TypeError("Selector predicates must be synchronous.");
+        if (typeof result !== "boolean") throw new TypeError("Selector predicates must return boolean.");
+        if (!result) return false;
+      } catch (error) {
+        throw new SelectorError([diagnostic(
+          "plugin.query-extension-failed",
+          `Selector predicate ${extension.name} failed: ${error instanceof Error ? error.message : "unknown failure"}`,
+          uri,
+          pseudo.range,
+        )]);
+      }
+      continue;
+    }
     let anyMatch = false;
     for (const sequence of pseudo.selectors) {
       const query = compileAnchored(
@@ -999,6 +1063,8 @@ const matchesCompound = async (
         captures,
         pseudo.kind === "has",
         treeView,
+        extensions,
+        uri,
       );
       // Adapters do not imply parallel read safety, so alternatives are tested in order.
       // oxlint-disable-next-line no-await-in-loop
@@ -1018,8 +1084,16 @@ const applyCompound = (
   schema: AdapterSchema,
   ambient: CaptureMap = {},
   treeView?: NamespacedName,
+  extensions: Readonly<Record<string, SelectorExtensionPredicate>> = {},
+  uri = "selector:runtime",
 ): Query<NavigableNodeHandle, CaptureMap> => {
   const transition = compositeParts.get(schema)?.map(({ namespace }) => namespace).join(" -> ");
+  const extensionNames = compound.pseudos.flatMap((pseudo) =>
+    pseudo.kind === "extension" ? [extensions[pseudo.name]?.name ?? pseudo.name] : []);
+  const label = [
+    transition === undefined ? "selector predicate" : `selector predicate (${transition})`,
+    ...extensionNames.map((name) => `plugin ${name}`),
+  ].join("; ");
   let result = query.filter(
     (node, captures, options) =>
       matchesCompound(
@@ -1029,8 +1103,10 @@ const applyCompound = (
         schema,
         options,
         treeView,
+        extensions,
+        uri,
       ),
-    transition === undefined ? "selector predicate" : `selector predicate (${transition})`,
+    label,
   );
   for (const { name } of compound.captures) {
     result = result.capture(name) as Query<NavigableNodeHandle, CaptureMap>;
@@ -1045,18 +1121,20 @@ const compileAnchored = (
   ambient: CaptureMap,
   relative: boolean,
   treeView?: NamespacedName,
+  extensions: Readonly<Record<string, SelectorExtensionPredicate>> = {},
+  uri = "selector:runtime",
 ): Query<NavigableNodeHandle, CaptureMap> => {
   let query = fromValues([node]) as Query<NavigableNodeHandle, CaptureMap>;
   const first = sequence.steps[0];
   if (first === undefined) return query.take(0);
   const leading = sequence.leading ?? (relative ? { kind: "descendant", range: sequence.range } : undefined);
   if (leading !== undefined) query = traverseSingle(query, leading, schema, treeView);
-  query = applyCompound(query, first.compound, schema, ambient, treeView);
+  query = applyCompound(query, first.compound, schema, ambient, treeView, extensions, uri);
   for (const step of sequence.steps.slice(1)) {
     if (step.combinator !== undefined) {
       query = traverseSingle(query, step.combinator, schema, treeView);
     }
-    query = applyCompound(query, step.compound, schema, ambient, treeView);
+    query = applyCompound(query, step.compound, schema, ambient, treeView, extensions, uri);
   }
   return query;
 };
@@ -1066,15 +1144,17 @@ const compileSequence = (
   sequence: SelectorSequence,
   schema: AdapterSchema,
   treeView?: NamespacedName,
+  extensions: Readonly<Record<string, SelectorExtensionPredicate>> = {},
+  uri = "selector:runtime",
 ): Query<NavigableNodeHandle, CaptureMap> => {
   const first = sequence.steps[0];
   if (first === undefined) return roots.take(0);
-  let query = applyCompound(roots, first.compound, schema, {}, treeView);
+  let query = applyCompound(roots, first.compound, schema, {}, treeView, extensions, uri);
   for (const step of sequence.steps.slice(1)) {
     if (step.combinator !== undefined) {
       query = traverseSingle(query, step.combinator, schema, treeView);
     }
-    query = applyCompound(query, step.compound, schema, {}, treeView);
+    query = applyCompound(query, step.compound, schema, {}, treeView, extensions, uri);
   }
   return query;
 };
@@ -1104,7 +1184,7 @@ export const selectFrom = (
 ): Query<NavigableNodeHandle, CaptureMap> => {
   const resolvedSchema = resolveSelectorSchema(schema);
   const program = typeof selector === "string" ? parseSelector(selector, options) : selector;
-  validateSelector(program, resolvedSchema);
+  validateSelector(program, resolvedSchema, options.predicates);
   const sequence = program.selectors[0];
   const parts = compositeParts.get(resolvedSchema);
   const firstKind = sequence?.steps[0]?.compound.kind;
@@ -1122,5 +1202,5 @@ export const selectFrom = (
       });
   return sequence === undefined
     ? roots.take(0)
-    : compileSequence(roots, sequence, resolvedSchema, options.treeView);
+    : compileSequence(roots, sequence, resolvedSchema, options.treeView, options.predicates, program.uri);
 };
