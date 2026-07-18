@@ -234,6 +234,71 @@ test("Markdown tree views are selectable through direct and mounted DSL sources"
     }
   }));
 
+test("configured TypeScript projects expose symbols and project-wide rename in the CLI", async () =>
+  fixture(async (root) => {
+    const declaration = join(root, "declaration.ts");
+    const usage = join(root, "usage.ts");
+    const project = join(root, "tsconfig.json");
+    await Promise.all([
+      writeFile(declaration, "export function oldName() { return 1; }\nexport const alias = oldName;\n"),
+      writeFile(usage, 'import { oldName } from "./declaration.js";\noldName();\n'),
+      writeFile(project, JSON.stringify({
+        compilerOptions: { module: "esnext", target: "es2022" },
+        include: ["*.ts"],
+      })),
+    ]);
+    const source = `from ts({ uri: ${JSON.stringify(declaration)} })`;
+    const symbolProgram = [
+      source,
+      "| select 'ts::variable ts::identifier[name = \"oldName\"] ->ts::symbol ts::identifier[declaration = true]'",
+      "| project { name: @name, file: @origin.uri }",
+    ].join("\n");
+    const symbol = await run(["query", "--expr", symbolProgram, "--project", "tsconfig.json"], { cwd: root });
+    assert.equal(symbol.code, 0, symbol.stderr);
+    assert.equal(JSON.parse(symbol.stdout).value.name, "oldName");
+    assert.match(JSON.parse(symbol.stdout).value.file, /declaration\.ts$/);
+
+    const syntaxOnly = await run(["query", "--expr", `${symbolProgram} | count`], { cwd: root });
+    assert.equal(syntaxOnly.code, 0);
+    assert.equal(JSON.parse(syntaxOnly.stdout).value, 0);
+    assert.match(syntaxOnly.stderr, /ts\.syntax-only/);
+
+    const renameProgram = [
+      source,
+      "| select 'ts::function > ts::identifier[name = \"oldName\"]'",
+      '| invoke ts::rename-symbol { name: "newName" }',
+      "| plan",
+    ].join("\n");
+    const preview = await run(["plan", "--expr", renameProgram, "--project", "tsconfig.json"], { cwd: root });
+    assert.equal(preview.code, 0, preview.stderr);
+    assert.equal(await readFile(declaration, "utf8"), "export function oldName() { return 1; }\nexport const alias = oldName;\n");
+    assert.equal(await readFile(usage, "utf8"), 'import { oldName } from "./declaration.js";\noldName();\n');
+    const applied = await run([
+      "apply", "--expr", renameProgram, "--project", "tsconfig.json", "--yes", "--allow-destructive",
+    ], { cwd: root });
+    assert.equal(applied.code, 0, applied.stderr);
+    assert.equal(await readFile(declaration, "utf8"), "export function newName() { return 1; }\nexport const alias = newName;\n");
+    assert.equal(await readFile(usage, "utf8"), 'import { newName } from "./declaration.js";\nnewName();\n');
+
+    const configDirectory = join(root, "config");
+    const configPath = join(configDirectory, "ast.json");
+    await mkdir(configDirectory);
+    await writeFile(configPath, JSON.stringify({ typescriptProject: "../tsconfig.json" }));
+    const explained = await run([
+      "explain", "--expr", source, "--config", configPath,
+    ], { cwd: tmpdir() });
+    assert.equal(explained.code, 0, explained.stderr);
+    assert.match(explained.stdout, /configured-project/);
+
+    const schema = await run(["schema", "ts", "--project", project]);
+    assert.equal(JSON.parse(schema.stdout).runtime.mode, "configured-project");
+    const plugins = await run(["plugins", "--project", project]);
+    assert.equal(
+      JSON.parse(plugins.stdout).builtIns.find(({ namespace }) => namespace === "ts").mode,
+      "configured-project",
+    );
+  }));
+
 test("filesystem CLI operations preview and apply the complete encoded surface", async () =>
   fixture(async (root) => {
     await Promise.all([
@@ -511,6 +576,8 @@ test("configuration sources are completely validated before use", async () =>
       { extra: true },
       { format: "yaml" },
       { color: "rainbow" },
+      { typescriptProject: "" },
+      { typescriptProject: 1 },
       { plugins: {} },
       { plugins: [null] },
       { plugins: [{}] },

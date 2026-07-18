@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { lstat, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -39,6 +40,8 @@ export interface TypeScriptChange extends Change<TypeScriptPatchPayload> {
 export interface TypeScriptStatistics { readonly programsCreated: number; readonly sourceFilesParsed: number; readonly nodesProjected: number; readonly opened: number; readonly closed: number; }
 export interface TypeScriptAdapter extends Adapter {
   readonly namespace: "ts";
+  readonly mode: "syntax-only" | "configured-project";
+  readonly project?: string;
   readonly read: ReadCapability;
   readonly planning: PlanningCapability<TypeScriptOperation, TypeScriptChange>;
   readonly apply: ApplyCapability<TypeScriptChange, ApplyResult>;
@@ -83,6 +86,11 @@ const schema = defineAdapterSchema({
 const abort = (signal?: AbortSignal): void => signal?.throwIfAborted();
 const revisionOf = (stat: Awaited<ReturnType<typeof lstat>>): Revision => [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
 const pathOf = (uri: string): string => resolve(uri.startsWith("file:") ? fileURLToPath(uri) : uri);
+const canonicalPath = (path: string): string => {
+  const absolute = resolve(path);
+  try { return realpathSync.native(absolute); }
+  catch { return absolute; }
+};
 const idFor = (path: string): string => createHash("sha256").update(path).digest("base64url").slice(0, 24);
 const localFor = (node: ts.Node): string => `${node.kind}:${node.pos}:${node.end}`;
 const nodeKind = (node: ts.Node): TypeScriptNodeKind => {
@@ -121,6 +129,7 @@ export const typeScriptReplaceCall = (call: NodeSnapshot, callee: string): TypeS
 };
 
 export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}): TypeScriptAdapter => {
+  const project = options.project === undefined ? undefined : canonicalPath(options.project);
   const files = new Map<string, FileState>();
   const resources = new Map<string, FileState>();
   const diagnostics: Diagnostic[] = [];
@@ -129,6 +138,7 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
   let projectFiles: readonly string[] = [];
   let compilerOptions: ts.CompilerOptions = {};
   const versions = new Map<string, string>();
+  const syntaxOnlyReported = new Set<string>();
 
   const reportDiagnostics = (
     sourceFile: ts.SourceFile,
@@ -146,7 +156,7 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
   };
 
   const buildState = async (sourceFile: ts.SourceFile, container?: NodeSnapshot): Promise<FileState> => {
-    const path = resolve(sourceFile.fileName);
+    const path = canonicalPath(sourceFile.fileName);
     const stat = await lstat(path);
     const revision = revisionOf(stat);
     const resource = defineResource({ id: idFor(path), adapter: "ts", uri: pathToFileURL(path).href, revision });
@@ -178,8 +188,8 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
   };
 
   const ensureProject = async (): Promise<void> => {
-    if (options.project === undefined || service !== undefined) return;
-    const configPath = resolve(options.project);
+    if (project === undefined || service !== undefined) return;
+    const configPath = project;
     const config = ts.readConfigFile(configPath, ts.sys.readFile);
     if (config.error !== undefined) throw new TypeError(ts.flattenDiagnosticMessageText(config.error.messageText, "\n"));
     const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, dirname(configPath), undefined, configPath);
@@ -191,12 +201,12 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
         locations: [{ kind: "source", origin: { uri: pathToFileURL(configPath).href } }],
       }));
     }
-    projectFiles = parsed.fileNames.map((fileName) => resolve(fileName));
+    projectFiles = parsed.fileNames.map(canonicalPath);
     compilerOptions = parsed.options;
     for (const path of projectFiles) versions.set(path, "1");
     const host: ts.LanguageServiceHost = {
       getScriptFileNames: () => [...projectFiles],
-      getScriptVersion: (fileName) => versions.get(resolve(fileName)) ?? "1",
+      getScriptVersion: (fileName) => versions.get(canonicalPath(fileName)) ?? "1",
       getScriptSnapshot: (fileName) => { const text = ts.sys.readFile(fileName); return text === undefined ? undefined : ts.ScriptSnapshot.fromString(text); },
       getCurrentDirectory: () => dirname(configPath),
       getCompilationSettings: () => compilerOptions,
@@ -207,7 +217,7 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
     statistics.programsCreated += 1;
     const program = service.getProgram();
     if (program !== undefined) {
-      const sources = program.getSourceFiles().filter((source) => projectFiles.includes(resolve(source.fileName)));
+      const sources = program.getSourceFiles().filter((source) => projectFiles.includes(canonicalPath(source.fileName)));
       await Promise.all(sources.map((source) => buildState(source)));
     }
   };
@@ -215,16 +225,25 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
   const openPath = async (path: string, container: NodeSnapshot | undefined, context: OpenContext): Promise<ResourceHandle> => {
     abort(context.signal); statistics.opened += 1;
     await ensureProject();
-    const absolute = resolve(path);
+    const absolute = canonicalPath(path);
     let state = files.get(absolute);
     if (state === undefined) {
       const text = await readFile(absolute, "utf8");
       const scriptKind = absolute.endsWith(".js") || absolute.endsWith(".jsx") ? ts.ScriptKind.JS : ts.ScriptKind.TS;
       const source = ts.createSourceFile(absolute, text, ts.ScriptTarget.Latest, true, scriptKind);
       state = await buildState(source, container);
-      if (options.project !== undefined) diagnostics.push(defineDiagnostic({ code: "ts.outside-project", severity: "info", message: `${pathToFileURL(absolute).href} is outside the configured project and uses syntax-only mode.`, locations: [{ kind: "source", origin: { uri: pathToFileURL(absolute).href } }] }));
+      if (project !== undefined) diagnostics.push(defineDiagnostic({ code: "ts.outside-project", severity: "info", message: `${pathToFileURL(absolute).href} is outside the configured project and uses syntax-only mode.`, locations: [{ kind: "source", origin: { uri: pathToFileURL(absolute).href } }] }));
     } else if (container !== undefined) {
       state = Object.freeze({ ...state, container }); files.set(absolute, state); resources.set(state.resource.id, state);
+    }
+    if (project === undefined && !syntaxOnlyReported.has(absolute)) {
+      syntaxOnlyReported.add(absolute);
+      diagnostics.push(defineDiagnostic({
+        code: "ts.syntax-only",
+        severity: "info",
+        message: `${pathToFileURL(absolute).href} uses syntax-only mode because no TypeScript project is configured.`,
+        locations: [{ kind: "source", origin: { uri: pathToFileURL(absolute).href } }],
+      }));
     }
     let closed = false;
     return Object.freeze({ resource: state.resource, async close() { if (!closed) { closed = true; statistics.closed += 1; } } });
@@ -236,7 +255,7 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
     if (value === undefined) return undefined;
     return (value.flags & ts.SymbolFlags.Alias) !== 0 ? checker()?.getAliasedSymbol(value) : value;
   };
-  const findNodeId = (node: ts.Node): NodeId | undefined => files.get(resolve(node.getSourceFile().fileName))?.nodes.get(localFor(node))?.snapshot.id;
+  const findNodeId = (node: ts.Node): NodeId | undefined => files.get(canonicalPath(node.getSourceFile().fileName))?.nodes.get(localFor(node))?.snapshot.id;
   const stateFor = (id: string): FileState => { const value = resources.get(id); if (value === undefined) throw new TypeError(`Unknown TypeScript resource ${id}.`); return value; };
 
   const read: ReadCapability = {
@@ -272,7 +291,7 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
     const locations = service.findRenameLocations(state.path, record.node.getStart(state.sourceFile), false, false, true) ?? [];
     if (locations.length === 0) throw new TypeError("TypeScript compiler could not prove rename locations.");
     const grouped = new Map<string, TypeScriptPatch[]>();
-    for (const location of locations) { const path = resolve(location.fileName); const values = grouped.get(path) ?? []; values.push({ range: { start: location.textSpan.start, end: location.textSpan.start + location.textSpan.length }, replacement: operation.payload.name }); grouped.set(path, values); }
+    for (const location of locations) { const path = canonicalPath(location.fileName); const values = grouped.get(path) ?? []; values.push({ range: { start: location.textSpan.start, end: location.textSpan.start + location.textSpan.length }, replacement: operation.payload.name }); grouped.set(path, values); }
     const changes: TypeScriptChange[] = [];
     const groupedChanges = await Promise.all([...grouped].map(async ([path, patches]) => { const targetState = files.get(path); return targetState === undefined ? undefined : changeFor(targetState, operation, patches); }));
     changes.push(...groupedChanges.filter((change): change is TypeScriptChange => change !== undefined));
@@ -291,7 +310,19 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
   } };
 
   const mount: MountCapability = { edge: "ts::mount", open(container, source, context) { return openPath(pathOf(source.uri), container, context); } };
-  const adapter: TypeScriptAdapter = Object.freeze({ contractVersion: "1", namespace: "ts", schema, read, planning, apply, mount, diagnostics: () => Object.freeze([...diagnostics]), statistics: () => Object.freeze({ ...statistics }) });
+  const adapter: TypeScriptAdapter = Object.freeze({
+    contractVersion: "1",
+    namespace: "ts",
+    schema,
+    mode: project === undefined ? "syntax-only" : "configured-project",
+    ...(project === undefined ? {} : { project: pathToFileURL(project).href }),
+    read,
+    planning,
+    apply,
+    mount,
+    diagnostics: () => Object.freeze([...diagnostics]),
+    statistics: () => Object.freeze({ ...statistics }),
+  });
   adapterInternals.set(adapter, { async openMounted(container, context) { if (container.kind !== "fs::file" || container.origin?.uri === undefined) throw new TypeError("TypeScript mounts require an fs::file."); return openPath(fileURLToPath(container.origin.uri), container, context); } });
   return adapter;
 };
@@ -307,4 +338,4 @@ const mountedHandle = (file: NavigableNodeHandle, adapter: TypeScriptAdapter): N
   edges(request: EdgeRequest = {}) { return { async *[Symbol.asyncIterator]() { for await (const edge of file.edges(request)) yield edge; if (file.snapshot.kind !== "fs::file" || (request.direction ?? "forward") !== "forward" || (request.names !== undefined && !request.names.includes("ts::mount")) || (request.roles !== undefined && !request.roles.includes("child"))) return; const implementation = adapterInternals.get(adapter); if (implementation === undefined) return; const handle = await implementation.openMounted(file.snapshot, request.signal === undefined ? {} : { signal: request.signal }); if (handle === undefined) return; try { for await (const root of adapter.read.roots(handle.resource, request)) yield defineEdge({ name: "ts::mount", role: "child", from: file.snapshot.id, to: root.id, ordinal: 0 }); } finally { await handle.close(); } } }; },
   async resolve(id: NodeId, signal?: AbortSignal) { if (id.adapter !== "ts") return file.resolve(id, signal); const [value] = await adapter.read.hydrate([id], { attributes: [], ...(signal === undefined ? {} : { signal }) }); return value === undefined ? undefined : mountedNode(adapter, value, file); },
 });
-export const mountTypeScript = <Captures extends CaptureMap>(files: Query<NavigableNodeHandle, Captures>, adapter: TypeScriptAdapter): Query<NavigableNodeHandle, Captures> => files.project((file) => mountedHandle(file, adapter), "mount typescript");
+export const mountTypeScript = <Captures extends CaptureMap>(files: Query<NavigableNodeHandle, Captures>, adapter: TypeScriptAdapter): Query<NavigableNodeHandle, Captures> => files.project((file) => mountedHandle(file, adapter), `mount typescript (${adapter.mode})`);

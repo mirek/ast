@@ -231,6 +231,24 @@ and exposes `ts::symbol` reference edges separately from `ts::children` syntax
 containment. Without a project, TypeScript and JavaScript remain queryable in
 syntax-only mode.
 
+The CLI selects that same mode explicitly with `--project <tsconfig-path>` or
+with `typescriptProject` in `.astrc.json`. A command-line path resolves from the
+invocation working directory; a config value resolves from the directory that
+contains that config file; the command-line value wins. One adapter and
+language service are reused by direct `ts` sources, filesystem mounts, symbol
+edges, and semantic rename planning for the invocation.
+
+```sh
+ast query --project tsconfig.json --expr \
+  'from ts({ uri: "src/index.ts" }) | select "ts::identifier ->ts::symbol ts::identifier"'
+ast apply --project tsconfig.json --file rename.dsl --yes --allow-destructive
+```
+
+Without either setting, TypeScript remains syntax-only and emits
+`ts.syntax-only` information when a file is opened; it never invents
+`ts::symbol` edges. Explain output and the `ts` rows from `schema` and `plugins`
+report `syntax-only` or `configured-project` without source contents.
+
 ```ts
 const typescript = createTypeScriptAdapter({ project: "tsconfig.json" });
 const calls = select(
@@ -431,8 +449,9 @@ Lines on stderr. Terminals default to readable indented values and redacted plan
 diffs. Planning cannot apply. Apply never prompts in automation and requires
 explicit confirmation plus risk acknowledgements. Flags override `AST_*`
 environment settings, which override `.astrc.json`. The config file is a closed,
-validated object containing only `format`, `color`, and structurally validated
-plugin entries; malformed files, invalid environment enums, unknown fields, and
+validated object containing only `format`, `color`, `typescriptProject`, and
+structurally validated plugin entries; malformed files, invalid environment
+enums, unknown fields, and
 duplicate plugin identities or aliases emit `cli.invalid-config` and exit 1
 before plugin code is loaded.
 

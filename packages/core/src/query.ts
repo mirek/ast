@@ -696,6 +696,7 @@ export const fromAdapter = (
         label: adapter.namespace,
         uri: source.uri,
         ...(source.treeView === undefined ? {} : { treeView: source.treeView }),
+        ...(source.mode === undefined ? {} : { mode: source.mode }),
       },
       false,
       [],

@@ -421,7 +421,10 @@ uses `ts::children` only for compiler syntax containment. In configured-project
 mode, `ts::symbol` is a separate reference edge from identifiers to compiler-
 proven declarations; it is never treated as a child edge. One cached language
 service supplies all files in a project. Without a configured project, files
-remain queryable in syntax-only mode and expose no invented symbol edges.
+remain queryable in syntax-only mode, expose no invented symbol edges, and emit
+an informational diagnostic when opened. Existing paths are canonicalized
+before project membership, symbol resolution, and rename grouping so platform
+path aliases do not silently downgrade project files.
 
 Selector compilation over a mount carries an ordered composite of the
 container and mounted schemas. Fully namespaced kinds, attributes, named edges,
@@ -873,6 +876,16 @@ plugin loading, or program execution. `ast --help`, `ast help`, and
 `ast <command> --help` write useful help to stdout and exit 0. `ast --version`
 and `ast -V` report the `@mirek/ast-cli` package version and exit 0.
 
+`--project <path>` explicitly selects one TypeScript configuration for an
+invocation and is valid for every command. Its path resolves from the process
+working directory. The optional `typescriptProject` config field resolves from
+the directory containing the selected `.astrc.json`; `--project` takes
+precedence. The CLI creates one configured adapter and language service reused
+by direct and mounted TypeScript sources, symbol traversal, and semantic rename.
+Without either setting it uses syntax-only mode and reports `ts.syntax-only`
+when opening a file. Explain output plus TypeScript schema and plugin inventory
+rows expose only the mode and project URI, never source contents.
+
 `query --renderer <alias-or-name>` explicitly selects an admitted plugin
 renderer for pretty terminal output. `plan --diff-provider <alias-or-name>`
 explicitly selects an admitted plugin diff provider for terminal previews.
@@ -909,9 +922,10 @@ overrides `.astrc.json`, then terminal-sensitive defaults. `--color` overrides
 `NO_COLOR`, then `AST_COLOR`, then `.astrc.json`. The initial renderer emits no
 ANSI color.
 
-CLI configuration is a closed object with optional `format`, `color`, and
-`plugins` fields. Formats are `jsonl` or `pretty`; color policies are `auto`,
-`always`, or `never`. Plugin entries require non-empty `specifier` and `name`
+CLI configuration is a closed object with optional `format`, `color`,
+`typescriptProject`, and `plugins` fields. Formats are `jsonl` or `pretty`;
+color policies are `auto`, `always`, or `never`. `typescriptProject` is a
+non-empty path string. Plugin entries require non-empty `specifier` and `name`
 strings and may contain only supported powers and the documented alias
 categories. Configuration objects, plugin entries, powers, and nested aliases
 are defensively copied and immutable after validation. Malformed JSON, missing
