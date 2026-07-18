@@ -220,7 +220,7 @@ test("explain, schema, and plugins are machine-readable", async () =>
     const schema = await run(["schema", "json"]);
     assert.equal(JSON.parse(schema.stdout).namespace, "json");
     const plugins = await run(["plugins"]);
-    assert.deepEqual(JSON.parse(plugins.stdout).map(({ namespace }) => namespace), ["fs", "json", "markdown", "ts"]);
+    assert.deepEqual(JSON.parse(plugins.stdout).builtIns.map(({ namespace }) => namespace), ["fs", "json", "markdown", "ts"]);
   }));
 
 test("configuration precedence and usage exit codes are deterministic", async () =>
@@ -271,8 +271,12 @@ test("command shapes and option values fail with stable usage diagnostics", asyn
     ["query"],
     ["query", "--expr"],
     ["query", "--expr", "from fs()", "--save", "plan.json"],
+    ["query", "--expr", "from fs()", "--diff-provider", "diff"],
+    ["query", "--expr", "from fs()", "--renderer"],
     ["query", "--expr", "from fs()", "--yes"],
     ["plan", "--expr", "from fs()", "--allow-destructive"],
+    ["plan", "--expr", "from fs()", "--renderer", "text"],
+    ["plan", "--expr", "from fs()", "--diff-provider"],
     ["apply", "--expr", "from fs()", "--save", "plan.json"],
     ["explain", "--expr", "from fs()", "--yes"],
     ["schema"],
@@ -362,8 +366,8 @@ test("explicitly allowlisted plugins load as trusted code and enforce powers bef
 
     const listed = await run(["plugins", "--config", config]);
     assert.equal(listed.code, 0);
-    const pluginRow = JSON.parse(listed.stdout).find(({ namespace }) => namespace === "example");
-    assert.equal(pluginRow.plugin.name, "@example/ast-plugin");
+    const pluginRow = JSON.parse(listed.stdout).plugins.find(({ name }) => name === "@example/ast-plugin");
+    assert.equal(pluginRow.adapters[0].namespace, "example");
     assert.equal(pluginRow.trustedCode, true);
     assert.equal(pluginRow.isolated, false);
     const queried = await run(["query", "--expr", "from demo() | count", "--config", config]);
@@ -376,6 +380,88 @@ test("explicitly allowlisted plugins load as trusted code and enforce powers bef
     const unauthorized = await run(["plugins", "--config", config]);
     assert.equal(unauthorized.code, 2);
     assert.match(unauthorized.stderr, /plugin\.unauthorized-power/);
+  }));
+
+test("plugin-only presentation contributions are inventoried and safely selected", async () =>
+  fixture(async (root) => {
+    const { runCli, EXIT } = await import("../dist/index.js");
+    const plugin = join(root, "presentation.mjs");
+    const config = join(root, "plugins.json");
+    const data = join(root, "data.json");
+    const source = join(root, "code.ts");
+    await writeFile(data, '{"password":"DO-NOT-LEAK"}\n');
+    await writeFile(source, "oldCall(1);\n");
+    const contributions = {
+      adapters: [], schemas: [], resolvers: [], mounts: [], operations: [],
+      predicates: [], functions: [],
+      renderers: ["present::text", "present::broken"],
+      diffProviders: ["present::diff"], optimizerRules: [],
+    };
+    await writeFile(plugin, [
+      "export default {",
+      `  manifest: ${JSON.stringify({ apiVersion: "1", name: "@example/presentation", version: "1.0.0", integrity: "sha256:presentation-1", namespaces: ["present"], powers: [], contributions })},`,
+      "  contributions: {",
+      "    renderers: [",
+      "      { name: 'present::text', render: (value) => `PLUGIN_RENDER ${JSON.stringify(value)}` },",
+      "      { name: 'present::broken', render: () => { throw new Error('renderer failed'); } },",
+      "    ],",
+      "    diffProviders: [{ name: 'present::diff', render: (before, after) => `PLUGIN_DIFF ${before} => ${after}` }],",
+      "  },",
+      "};",
+    ].join("\n"));
+    await writeFile(config, JSON.stringify({ plugins: [{
+      specifier: plugin,
+      name: "@example/presentation",
+      powers: [],
+      aliases: { renderers: { show: "present::text", broken: "present::broken" }, diffProviders: { safe: "present::diff" } },
+    }] }));
+
+    const listed = await run(["plugins", "--config", config]);
+    assert.equal(listed.code, 0);
+    const inventory = JSON.parse(listed.stdout);
+    assert.equal(inventory.plugins.length, 1);
+    assert.equal(inventory.plugins[0].name, "@example/presentation");
+    assert.equal(inventory.plugins[0].trustedCode, true);
+    assert.equal(inventory.plugins[0].isolated, false);
+    assert.deepEqual(inventory.plugins[0].contributions.renderers, ["present::text", "present::broken"]);
+    assert.equal(inventory.plugins[0].aliases.renderers.show, "present::text");
+    assert.deepEqual(inventory.plugins[0].adapters, []);
+
+    const invoke = async (args, stdoutIsTTY) => {
+      let stdout = "";
+      let stderr = "";
+      const code = await runCli(args, {
+        stdout: { write: (value) => { stdout += value; } },
+        stderr: { write: (value) => { stderr += value; } },
+        stdinIsTTY: false,
+        stdoutIsTTY,
+        cwd: root,
+        env: { NO_COLOR: "1" },
+      });
+      return { code, stdout, stderr };
+    };
+    const query = `from json({ uri: ${JSON.stringify(data)} }) | select 'json::scalar' | project { password: @value }`;
+    const rendered = await invoke(["query", "--expr", query, "--renderer", "show", "--config", config], true);
+    assert.equal(rendered.code, EXIT.success);
+    assert.match(rendered.stdout, /PLUGIN_RENDER/);
+    assert.equal(rendered.stdout.includes("DO-NOT-LEAK"), false);
+
+    const canonical = await invoke(["query", "--expr", query, "--renderer", "show", "--format", "jsonl", "--config", config], false);
+    assert.equal(canonical.code, EXIT.success);
+    assert.match(canonical.stdout, /"type":"data"/);
+    assert.equal(canonical.stdout.includes("PLUGIN_RENDER"), false);
+
+    const program = `from ts({ uri: ${JSON.stringify(source)} }) | select 'ts::call[callee = "oldCall"]' | invoke ts::replace-call { callee: "newCall" } | plan`;
+    const diffed = await invoke(["plan", "--expr", program, "--diff-provider", "safe", "--config", config], true);
+    assert.equal(diffed.code, EXIT.success);
+    assert.match(diffed.stdout, /PLUGIN_DIFF \[REDACTED\] => \[REDACTED\]/);
+    assert.equal(diffed.stdout.includes("oldCall(1)"), false);
+    assert.equal(diffed.stdout.includes("newCall(1)"), false);
+
+    const failed = await invoke(["query", "--expr", query, "--renderer", "broken", "--config", config], true);
+    assert.equal(failed.code, EXIT.diagnostic);
+    assert.equal(failed.stdout, "");
+    assert.match(failed.stderr, /plugin\.presentation-failed/);
   }));
 
 test("an already-aborted invocation returns the cancellation exit code", async () => {

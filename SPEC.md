@@ -820,6 +820,17 @@ plugin loading, or program execution. `ast --help`, `ast help`, and
 `ast <command> --help` write useful help to stdout and exit 0. `ast --version`
 and `ast -V` report the `@mirek/ast-cli` package version and exit 0.
 
+`query --renderer <alias-or-name>` explicitly selects an admitted plugin
+renderer for pretty terminal output. `plan --diff-provider <alias-or-name>`
+explicitly selects an admitted plugin diff provider for terminal previews.
+Automation never invokes these callbacks: JSON Lines remain host-canonical and
+non-terminal plans use the host renderer. Unknown selections are diagnostics.
+Renderer inputs are host-serialized and redacted copies, not live query values.
+Diff providers receive non-sensitive preview strings or the literal
+`[REDACTED]` for both sides of a sensitive preview. A callback failure emits
+`plugin.presentation-failed`; the CLI does not fall back to a potentially more
+revealing presentation.
+
 The executable and product name is `ast`; the package remains
 `@mirek/ast-cli` while private.
 
@@ -921,6 +932,13 @@ separately for namespaces, sources, mounts, operations, predicates, functions,
 renderers, and diff providers. The textual DSL consumes explicit source, mount,
 and operation aliases; canonical contribution identity remains namespaced.
 
+`ast plugins` returns a complete inventory with separate built-in adapters and
+plugin packages. Each plugin row contains its package/API/build identity,
+required and approved powers, namespaces, configured aliases, exact manifest
+lists for every contribution category, adapter compatibility rows, and the
+`trustedCode: true` / `isolated: false` boundary. Packages remain visible when
+their adapter list is empty.
+
 Required powers distinguish resource read/write, filesystem read/write, network
 read/write, process execution, credential reads, and native-module loading.
 Registration rejects a plugin when any declared power is unapproved. This is
@@ -993,6 +1011,9 @@ before using contributions. Module top-level code necessarily runs during
 import, before its exported manifest can be checked. `ast plugins` reports
 external modules as trusted and not isolated. No sandbox, power-level syscall
 enforcement, credential broker, or module-byte attestation currently exists.
+Presentation callbacks execute with the same trust. The host withholds live
+values and sensitive preview text, but cannot prevent trusted plugin code from
+emitting unrelated data it obtains through its own authority.
 
 ## 17. Initial scope
 

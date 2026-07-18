@@ -44,8 +44,10 @@ import type {
   NodeSnapshot,
   PluginAliases,
   PluginModule,
+  PluginDiffProviderContribution,
   PluginPower,
   PluginRegistry,
+  PluginRendererContribution,
 } from "@mirek/ast";
 
 export interface CliIo {
@@ -81,6 +83,8 @@ interface ParsedArguments {
   readonly color?: "auto" | "always" | "never";
   readonly config?: string;
   readonly save?: string;
+  readonly renderer?: string;
+  readonly diffProvider?: string;
   readonly yes: boolean;
   readonly allowDestructive: boolean;
   readonly allowIrreversible: boolean;
@@ -148,6 +152,8 @@ const inputHelp = [
   "  --expr <program>         Read an inline DSL program.",
   "  --stdin                  Read input from standard input.",
 ];
+const rendererHelp = "  --renderer <name>         Select a plugin renderer for terminal query output.";
+const diffProviderHelp = "  --diff-provider <name>    Select a plugin diff provider for terminal plans.";
 const commonHelp = [
   "  --format <jsonl|pretty>  Select output formatting.",
   "  --color <auto|always|never> Select color policy.",
@@ -155,8 +161,8 @@ const commonHelp = [
   "  -h, --help               Show this help.",
 ];
 const commandHelp: Readonly<Record<CliCommand, string>> = Object.freeze({
-  query: ["Usage: ast query <input> [options]", "", "Input options:", ...inputHelp, "", "Options:", ...commonHelp, ""].join("\n"),
-  plan: ["Usage: ast plan <input> [--save <path>] [options]", "", "Input options:", ...inputHelp, "", "Options:", "  --save <path>            Save the plan envelope.", ...commonHelp, ""].join("\n"),
+  query: ["Usage: ast query <input> [options]", "", "Input options:", ...inputHelp, "", "Options:", rendererHelp, ...commonHelp, ""].join("\n"),
+  plan: ["Usage: ast plan <input> [--save <path>] [options]", "", "Input options:", ...inputHelp, "", "Options:", "  --save <path>            Save the plan envelope.", diffProviderHelp, ...commonHelp, ""].join("\n"),
   apply: ["Usage: ast apply <input> --yes [risk acknowledgements] [options]", "", "Input options:", ...inputHelp, "", "Options:", "  --yes                    Confirm non-interactive application.", "  --allow-destructive      Acknowledge destructive changes.", "  --allow-irreversible     Acknowledge irreversible changes.", ...commonHelp, ""].join("\n"),
   explain: ["Usage: ast explain <input> [options]", "", "Input options:", ...inputHelp, "", "Options:", ...commonHelp, ""].join("\n"),
   schema: ["Usage: ast schema <namespace> [options]", "", "Options:", ...commonHelp, ""].join("\n"),
@@ -175,6 +181,8 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
   let color: ParsedArguments["color"];
   let config: string | undefined;
   let save: string | undefined;
+  let renderer: string | undefined;
+  let diffProvider: string | undefined;
   let file: string | undefined;
   let expression: string | undefined;
   let stdin = false;
@@ -199,7 +207,7 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
     }
     else if (value === "--allow-destructive") { use(value); allowDestructive = true; }
     else if (value === "--allow-irreversible") { use(value); allowIrreversible = true; }
-    else if (["--format", "--color", "--config", "--save", "--file", "--expr"].includes(value)) {
+    else if (["--format", "--color", "--config", "--save", "--file", "--expr", "--renderer", "--diff-provider"].includes(value)) {
       const next = args[index + 1];
       if (next === undefined || (next.startsWith("-") && next !== "-")) throw new CliUsageError(`${value} requires a value.`);
       use(value);
@@ -212,6 +220,8 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
         color = next;
       } else if (value === "--config") config = next;
       else if (value === "--save") save = next;
+      else if (value === "--renderer") renderer = next;
+      else if (value === "--diff-provider") diffProvider = next;
       else if (value === "--file") file = next;
       else expression = next;
     } else if (value.startsWith("-") && value !== "-") throw new CliUsageError(`Unknown option ${value}.`);
@@ -229,6 +239,8 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
     ...(color === undefined ? {} : { color }),
     ...(config === undefined ? {} : { config }),
     ...(save === undefined ? {} : { save }),
+    ...(renderer === undefined ? {} : { renderer }),
+    ...(diffProvider === undefined ? {} : { diffProvider }),
     yes,
     allowDestructive,
     allowIrreversible,
@@ -238,8 +250,8 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
 const commonOptions = ["--format", "--color", "--config", "--help"] as const;
 const inputOptions = ["--file", "--expr", "--stdin"] as const;
 const allowedOptions: Readonly<Record<CliCommand, readonly string[]>> = Object.freeze({
-  query: [...commonOptions, ...inputOptions],
-  plan: [...commonOptions, ...inputOptions, "--save"],
+  query: [...commonOptions, ...inputOptions, "--renderer"],
+  plan: [...commonOptions, ...inputOptions, "--save", "--diff-provider"],
   apply: [...commonOptions, ...inputOptions, "--yes", "--allow-destructive", "--allow-irreversible"],
   explain: [...commonOptions, ...inputOptions],
   schema: commonOptions,
@@ -413,6 +425,54 @@ const emit = (io: CliIo, format: "jsonl" | "pretty", value: unknown, type = "dat
   else io.stdout.write(`${JSON.stringify(serializable(value), undefined, 2)}\n`);
 };
 const emitDiagnostic = (io: CliIo, value: Diagnostic): void => { io.stderr.write(line({ type: "diagnostic", value })); };
+
+const selectPresentation = <Contribution>(
+  requested: string | undefined,
+  aliases: Readonly<Record<string, string>>,
+  contributions: Readonly<Record<string, Contribution>>,
+  label: string,
+): Contribution | undefined => {
+  if (requested === undefined) return undefined;
+  const canonical = aliases[requested] ?? requested;
+  const contribution = contributions[canonical];
+  if (contribution === undefined) throw new PluginError("plugin.unknown-presentation", `Unknown plugin ${label} ${JSON.stringify(requested)}.`);
+  return contribution;
+};
+
+const presentationFailure = (label: string, error: unknown): never => {
+  throw new PluginError("plugin.presentation-failed", `Plugin ${label} failed without a presentation fallback.`, { cause: error });
+};
+
+const renderPluginValue = (renderer: PluginRendererContribution, value: unknown): string => {
+  try {
+    const rendered = renderer.render(serializable(value));
+    if (typeof rendered !== "string") throw new TypeError("Plugin renderer must return a string.");
+    return rendered.endsWith("\n") ? rendered : `${rendered}\n`;
+  } catch (error) {
+    return presentationFailure(`renderer ${renderer.name}`, error);
+  }
+};
+
+const renderPluginPlan = (plan: ChangePlan, provider: PluginDiffProviderContribution): string => {
+  const lines: string[] = [];
+  for (const change of plan.changes) {
+    lines.push(`[${change.risk.toUpperCase()}] ${change.summary}`);
+    if (change.preview === undefined) continue;
+    const before = change.preview.sensitive ? "[REDACTED]" : change.preview.before;
+    const after = change.preview.sensitive ? "[REDACTED]" : change.preview.after;
+    try {
+      const rendered = provider.render(before, after);
+      if (typeof rendered !== "string") throw new TypeError("Plugin diff provider must return a string.");
+      lines.push(rendered);
+    } catch (error) {
+      return presentationFailure(`diff provider ${provider.name}`, error);
+    }
+  }
+  for (const diagnostic of plan.diagnostics) {
+    lines.push(`[${diagnostic.severity.toUpperCase()} ${diagnostic.code}] ${diagnostic.message}`);
+  }
+  return `${lines.join("\n")}\n`;
+};
 
 const mergeAliases = (entries: readonly CliPluginConfig[]): PluginAliases => {
   const categories = ["namespaces", "sources", "mounts", "operations", "predicates", "functions", "renderers", "diffProviders"] as const;
@@ -692,9 +752,38 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
       return EXIT.success;
     }
     if (command === "plugins") {
-      const values = runtime.adapters.map((adapter) => adapter.plugin === undefined
-        ? { ...adapterCompatibility(adapter), builtIn: true }
-        : { ...adapterCompatibility(adapter), builtIn: false, plugin: adapter.plugin, trustedCode: true, isolated: false });
+      const values = {
+        builtIns: runtime.adapters
+          .filter(({ plugin }) => plugin === undefined)
+          .map((adapter) => {
+            const compatibility = adapterCompatibility(adapter);
+            return {
+              contractVersion: compatibility.contractVersion,
+              namespace: compatibility.namespace,
+              schemaVersion: compatibility.schemaVersion,
+              builtIn: true,
+            };
+          }),
+        plugins: runtime.plugins.plugins.map((plugin) => {
+          const configured = config.plugins.find(({ name }) => name === plugin.name);
+          return {
+            apiVersion: plugin.apiVersion,
+            name: plugin.name,
+            version: plugin.version,
+            integrity: plugin.integrity,
+            namespaces: plugin.namespaces,
+            powers: plugin.powers,
+            contributions: plugin.contributions,
+            approvedPowers: configured?.powers ?? [],
+            aliases: configured?.aliases ?? {},
+            adapters: runtime.adapters
+              .filter((adapter) => adapter.plugin?.name === plugin.name)
+              .map(adapterCompatibility),
+            trustedCode: true,
+            isolated: false,
+          };
+        }),
+      };
       io.stdout.write(`${JSON.stringify(values, undefined, config.format === "pretty" ? 2 : undefined)}\n`);
       return EXIT.success;
     }
@@ -721,7 +810,16 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
       : undefined;
     if (command === "query") {
       if (compiled?.kind !== "query") throw new TypeError("query requires a query program.");
-      for await (const value of compiled.query.iterate(io.signal === undefined ? {} : { signal: io.signal })) emit(io, config.format, value);
+      const renderer = selectPresentation(
+        parsed.renderer,
+        runtime.plugins.aliases.renderers,
+        runtime.plugins.renderers,
+        "renderer",
+      );
+      for await (const value of compiled.query.iterate(io.signal === undefined ? {} : { signal: io.signal })) {
+        if (renderer !== undefined && config.format === "pretty" && io.stdoutIsTTY) io.stdout.write(renderPluginValue(renderer, value));
+        else emit(io, config.format, value);
+      }
       const diagnostics = diagnosticsOf(runtime.adapters);
       for (const diagnostic of diagnostics) emitDiagnostic(io, diagnostic);
       return diagnostics.some(({ severity }) => severity === "error")
@@ -746,7 +844,15 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
       return EXIT.invalidPlan;
     }
     if (command === "plan") {
-      io.stdout.write(renderChangePlan(plan));
+      const diffProvider = selectPresentation(
+        parsed.diffProvider,
+        runtime.plugins.aliases.diffProviders,
+        runtime.plugins.diffProviders,
+        "diff provider",
+      );
+      io.stdout.write(diffProvider !== undefined && io.stdoutIsTTY
+        ? renderPluginPlan(plan, diffProvider)
+        : renderChangePlan(plan));
       if (parsed.save !== undefined) await writeFile(resolve(io.cwd, parsed.save), serializeChangePlan(plan), "utf8");
       return EXIT.success;
     }
