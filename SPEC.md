@@ -1,6 +1,6 @@
 # Unified Node Graph Language and Runtime Specification
 
-Status: Architecture validated 0.1; package release pending
+Status: Architecture validated 0.1; follow-up backlog active; package release pending
 Audience: implementers, plugin authors, and users designing structured automation  
 Implementation language: TypeScript  
 
@@ -1170,5 +1170,6 @@ The architecture was implemented and pressure-tested in this dependency order:
 The primary limiting factor was not parsing or selector syntax. It was defining
 an adapter and change protocol that is uniform enough to compose while still
 preserving source-specific semantics, performance, and safety. This sequence
-tested that boundary before architecture acceptance; [TODO.md](./TODO.md) now
-contains no remaining implementation items.
+tested that boundary before architecture acceptance. [TODO.md](./TODO.md)
+indexes follow-up correctness and product-surface work discovered through
+public CLI and selector exploration.

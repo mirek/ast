@@ -11,8 +11,8 @@ executable lazy query algebra, selector compiler, local filesystem adapter, and
 lazily mounted JSON, Markdown, and TypeScript document adapters, textual DSL,
 change planning, and the `ast` CLI.
 
-Read [SPEC.md](./SPEC.md) for the architecture. [TODO.md](./TODO.md) records that
-no implementation work currently remains.
+Read [SPEC.md](./SPEC.md) for the architecture. [TODO.md](./TODO.md) indexes the
+current follow-up work found by exercising the public CLI and selector surface.
 
 ## Workspace
 
