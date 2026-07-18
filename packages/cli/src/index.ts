@@ -95,6 +95,7 @@ interface ParsedArguments {
   readonly yes: boolean;
   readonly allowDestructive: boolean;
   readonly allowIrreversible: boolean;
+  readonly failurePolicy: "stop" | "continue-independent";
 }
 
 interface CliConfig {
@@ -174,7 +175,7 @@ const commonHelp = [
 const commandHelp: Readonly<Record<CliCommand, string>> = Object.freeze({
   query: ["Usage: ast query <input> [options]", "", "Input options:", ...inputHelp, "", "Options:", rendererHelp, ...commonHelp, ""].join("\n"),
   plan: ["Usage: ast plan <input> [--save <path>] [options]", "", "Input options:", ...inputHelp, "", "Options:", "  --save <path>            Save the plan envelope.", diffProviderHelp, ...commonHelp, ""].join("\n"),
-  apply: ["Usage: ast apply <input> --yes [risk acknowledgements] [options]", "", "Input options:", ...inputHelp, "", "Options:", "  --yes                    Confirm non-interactive application.", "  --allow-destructive      Acknowledge destructive changes.", "  --allow-irreversible     Acknowledge irreversible changes.", ...commonHelp, ""].join("\n"),
+  apply: ["Usage: ast apply <input> --yes [risk acknowledgements] [options]", "", "Input options:", ...inputHelp, "", "Options:", "  --yes                    Confirm non-interactive application.", "  --allow-destructive      Acknowledge destructive changes.", "  --allow-irreversible     Acknowledge irreversible changes.", "  --failure-policy <stop|continue-independent>", "                           Select scheduling after a failed group (default: stop).", ...commonHelp, ""].join("\n"),
   explain: ["Usage: ast explain <input> [options]", "", "Input options:", ...inputHelp, "", "Options:", ...commonHelp, ""].join("\n"),
   schema: ["Usage: ast schema <namespace> [options]", "", "Options:", ...commonHelp, ""].join("\n"),
   plugins: ["Usage: ast plugins [options]", "", "Options:", ...commonHelp, ""].join("\n"),
@@ -201,6 +202,7 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
   let yes = false;
   let allowDestructive = false;
   let allowIrreversible = false;
+  let failurePolicy: ParsedArguments["failurePolicy"] = "stop";
   const use = (option: string): void => {
     if (seen.has(option)) throw new CliUsageError(`${option} may be specified only once.`);
     seen.add(option);
@@ -219,7 +221,7 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
     }
     else if (value === "--allow-destructive") { use(value); allowDestructive = true; }
     else if (value === "--allow-irreversible") { use(value); allowIrreversible = true; }
-    else if (["--format", "--color", "--config", "--project", "--save", "--file", "--expr", "--renderer", "--diff-provider"].includes(value)) {
+    else if (["--format", "--color", "--config", "--project", "--save", "--file", "--expr", "--renderer", "--diff-provider", "--failure-policy"].includes(value)) {
       const next = args[index + 1];
       if (next === undefined || (next.startsWith("-") && next !== "-")) throw new CliUsageError(`${value} requires a value.`);
       use(value);
@@ -230,6 +232,11 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
       } else if (value === "--color") {
         if (next !== "auto" && next !== "always" && next !== "never") throw new CliUsageError("Color must be auto, always, or never.");
         color = next;
+      } else if (value === "--failure-policy") {
+        if (next !== "stop" && next !== "continue-independent") {
+          throw new CliUsageError("Failure policy must be stop or continue-independent.");
+        }
+        failurePolicy = next;
       } else if (value === "--config") config = next;
       else if (value === "--project") project = next;
       else if (value === "--save") save = next;
@@ -258,6 +265,7 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
     yes,
     allowDestructive,
     allowIrreversible,
+    failurePolicy,
   };
 };
 
@@ -266,7 +274,7 @@ const inputOptions = ["--file", "--expr", "--stdin"] as const;
 const allowedOptions: Readonly<Record<CliCommand, readonly string[]>> = Object.freeze({
   query: [...commonOptions, ...inputOptions, "--renderer"],
   plan: [...commonOptions, ...inputOptions, "--save", "--diff-provider"],
-  apply: [...commonOptions, ...inputOptions, "--yes", "--allow-destructive", "--allow-irreversible"],
+  apply: [...commonOptions, ...inputOptions, "--yes", "--allow-destructive", "--allow-irreversible", "--failure-policy"],
   explain: [...commonOptions, ...inputOptions],
   schema: commonOptions,
   plugins: commonOptions,
@@ -1018,7 +1026,10 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
     const result = await applyChangePlan(
       plan,
       runtime.adapters,
-      io.signal === undefined ? {} : { signal: io.signal },
+      {
+        failurePolicy: parsed.failurePolicy,
+        ...(io.signal === undefined ? {} : { signal: io.signal }),
+      },
     );
     emit(io, config.format, result, "apply");
     return result.groups.some(({ status }) => status === "failed") ? EXIT.apply : EXIT.success;

@@ -451,6 +451,69 @@ test("plan previews cannot apply and saved destructive plans require acknowledge
     assert.equal(await readFile(source, "utf8"), "newCall(1);\n");
   }));
 
+test("apply failure policy distinguishes failed, dependent, stopped, and continued groups", async () =>
+  fixture(async (root) => {
+    const prepare = async (name) => {
+      const directory = join(root, name);
+      const saved = join(directory, "plan.json");
+      await mkdir(directory);
+      await Promise.all([
+        writeFile(join(directory, "a.txt"), "a0"),
+        writeFile(join(directory, "b.txt"), "b0"),
+        writeFile(join(directory, "c.txt"), "c0"),
+      ]);
+      const program = [
+        `from fs({ uri: ${JSON.stringify(directory)}, include: ["*.txt"], kinds: ["fs::file"] })`,
+        '| invoke fs::write { encoding: "utf8", content: "changed" }',
+        "| plan",
+      ].join("\n");
+      const preview = await run(["plan", "--expr", program, "--save", saved]);
+      assert.equal(preview.code, 0);
+      const envelope = JSON.parse(await readFile(saved, "utf8"));
+      const [failed, dependent, independent] = envelope.plan.transactionGroups;
+      dependent.dependsOn = [failed.id];
+      await writeFile(saved, JSON.stringify(resignPlanEnvelope(envelope)));
+      await writeFile(join(directory, "a.txt"), "externally changed");
+      return { directory, saved, ids: [failed.id, dependent.id, independent.id] };
+    };
+
+    const stoppedFixture = await prepare("stopped");
+    const stopped = await run([
+      "apply", "--file", stoppedFixture.saved, "--yes", "--allow-destructive",
+    ]);
+    assert.equal(stopped.code, 5);
+    assert.equal(stopped.stderr, "");
+    const stoppedReport = JSON.parse(stopped.stdout);
+    assert.equal(stoppedReport.type, "apply");
+    assert.deepEqual(stoppedReport.value.groups.map(({ id, status }) => [id, status]), [
+      [stoppedFixture.ids[0], "failed"],
+      [stoppedFixture.ids[1], "skipped-dependency"],
+      [stoppedFixture.ids[2], "skipped-policy"],
+    ]);
+    assert.equal(stoppedReport.value.partialApplication, false);
+    assert.equal(await readFile(join(stoppedFixture.directory, "b.txt"), "utf8"), "b0");
+    assert.equal(await readFile(join(stoppedFixture.directory, "c.txt"), "utf8"), "c0");
+
+    const continuedFixture = await prepare("continued");
+    const continued = await run([
+      "apply", "--file", continuedFixture.saved, "--yes", "--allow-destructive",
+      "--failure-policy", "continue-independent", "--format", "pretty",
+    ]);
+    assert.equal(continued.code, 5);
+    assert.equal(continued.stderr, "");
+    const continuedReport = JSON.parse(continued.stdout);
+    assert.deepEqual(continuedReport.groups.map(({ id, status }) => [id, status]), [
+      [continuedFixture.ids[0], "failed"],
+      [continuedFixture.ids[1], "skipped-dependency"],
+      [continuedFixture.ids[2], "applied"],
+    ]);
+    assert.equal(continuedReport.appliedChanges, 1);
+    assert.equal(continuedReport.partialApplication, true);
+    assert.equal(await readFile(join(continuedFixture.directory, "a.txt"), "utf8"), "externally changed");
+    assert.equal(await readFile(join(continuedFixture.directory, "b.txt"), "utf8"), "b0");
+    assert.equal(await readFile(join(continuedFixture.directory, "c.txt"), "utf8"), "changed");
+  }));
+
 test("explain, schema, and plugins are machine-readable", async () =>
   fixture(async (root) => {
     const data = join(root, "data.json");
@@ -545,6 +608,9 @@ test("command shapes and option values fail with stable usage diagnostics", asyn
     ["plan", "--expr", "from fs()", "--renderer", "text"],
     ["plan", "--expr", "from fs()", "--diff-provider"],
     ["apply", "--expr", "from fs()", "--save", "plan.json"],
+    ["apply", "--expr", "from fs()", "--failure-policy"],
+    ["apply", "--expr", "from fs()", "--failure-policy", "continue"],
+    ["plan", "--expr", "from fs()", "--failure-policy", "stop"],
     ["explain", "--expr", "from fs()", "--yes"],
     ["schema"],
     ["schema", "json", "ts"],

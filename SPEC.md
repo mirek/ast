@@ -870,7 +870,7 @@ The CLI SHOULD support:
 ```text
 ast query <input>
 ast plan <input> [--save plan.json]
-ast apply <input> --yes [risk acknowledgements]
+ast apply <input> --yes [risk acknowledgements] [--failure-policy <stop|continue-independent>]
 ast explain <input>
 ast schema <namespace>
 ast plugins
@@ -886,11 +886,11 @@ standard input programs use the stable non-file URIs `argv:program` and
 `stdin:program`. Ambiguous input combinations are usage failures, and
 cancellation interrupts a pending standard-input read.
 
-Arguments are command-specific. `--save` belongs only to `plan`; `--yes` and
-the risk acknowledgements belong only to `apply`; `schema` requires exactly one
-namespace; and `plugins` accepts no positional argument. Unknown, duplicate,
-missing-value, irrelevant, and extra arguments fail before configuration,
-plugin loading, or program execution. `ast --help`, `ast help`, and
+Arguments are command-specific. `--save` belongs only to `plan`; `--yes`, the
+risk acknowledgements, and `--failure-policy` belong only to `apply`; `schema`
+requires exactly one namespace; and `plugins` accepts no positional argument.
+Unknown, duplicate, missing-value, irrelevant, and extra arguments fail before
+configuration, plugin loading, or program execution. `ast --help`, `ast help`, and
 `ast <command> --help` write useful help to stdout and exit 0. `ast --version`
 and `ast -V` report the `@mirek/ast-cli` package version and exit 0.
 
@@ -954,7 +954,15 @@ ignored merely because a higher-precedence setting is present.
 
 `plan` only previews and optionally saves. Non-interactive apply never prompts
 and requires `--yes`, plus `--allow-destructive` or `--allow-irreversible` for
-those risks. `apply --expr` is always DSL. File and stdin JSON objects bearing
+those risks. `--failure-policy` accepts `stop` or `continue-independent` and
+defaults conservatively to `stop`; continuation schedules only groups whose
+dependencies applied successfully. Both JSON Lines and pretty reports preserve
+the applied, failed, dependency-skipped, and policy-skipped statuses, applied
+change count, and whether effects preceded a failure. Risk acknowledgements
+authorize the plan, not every group independently. Cancellation reaches the
+active adapter and prevents groups that have not started from being scheduled;
+it exits 130 rather than converting those groups into policy skips. `apply
+--expr` is always DSL. File and stdin JSON objects bearing
 `integrity`, `plan`, or `formatVersion` are conservatively recognized as saved
 plan input; missing, mistyped, malformed, integrity-invalid, or incompatible
 envelopes exit 3 with `cli.invalid-plan` and cannot fall back to DSL. The loader
