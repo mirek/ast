@@ -141,8 +141,11 @@ test("repository inventory and semantic transformation programs are executable",
       operations: {
         "ts::replace-call": {
           adapter: typescript,
+          arguments: {
+            callee: { type: "string", cardinality: "one", required: true },
+          },
           create: (target, args) =>
-            typeScriptReplaceCall(target.snapshot, String(args.callee)),
+            typeScriptReplaceCall(target.snapshot, args.callee),
         },
       },
     };

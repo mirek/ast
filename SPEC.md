@@ -438,7 +438,7 @@ failure, cancellation, and early-return behavior.
 
 Adapters publish typed operations such as:
 
-- `fs.move`, `fs.remove`, and `fs.write`;
+- `fs::write`, `fs::move`, `fs::remove`, and `fs::create`;
 - `ts.renameSymbol` and `ts.organizeImports`;
 - `markdown.setHeading`;
 - `sql.updateRows` and `sql.deleteRows`.
@@ -652,14 +652,30 @@ and crosses the mount only through an explicit combinator. The TypeScript
 `selectFrom` API accepts the same schema chain and exposes root-versus-selection
 choice through `sourceMode`, so textual and programmatic queries retain
 identical plans.
-Source resolvers and mounts also publish one serializable named-argument schema.
-Each field declares its scalar type, `one` or `many` cardinality, whether it is
-required, and optional default, allowed choices, and sensitivity. Compilation
-rejects missing, unknown, duplicate, ill-typed, wrong-cardinality, and
-disallowed arguments with the field's program span before opening a resource.
+Source resolvers, mounts, and operations also publish one serializable
+named-argument schema. Each field declares its scalar type, `one` or `many`
+cardinality, whether it is required, and optional default, allowed choices, and
+sensitivity. Compilation rejects missing, unknown, duplicate, ill-typed,
+wrong-cardinality, and disallowed arguments with the field's program span
+before opening a resource.
 Resolved arrays and defaults are immutable. Physical explanations show safe
 resolved built-in options and native pushdowns; sensitive fields are never
 rendered by the generic compiler.
+
+The built-in filesystem operations use these textual argument shapes:
+
+```text
+fs::write  { encoding: "utf8" | "base64", content: string }
+fs::move   { destination: string }
+fs::remove {}
+fs::create { name: string, nodeKind: "file" | "directory",
+             encoding?: "utf8" | "base64", content?: string }
+```
+
+`encoding` and `content` are supplied together when `fs::create` initializes a
+file; directory creation has neither. These programs still produce plans:
+revision and destination-absence checks, conflict detection, risk labels, and
+explicit apply remain adapter-owned.
 There are deliberately no imports, modules, user functions, loops, arbitrary
 code evaluation, general recursion, or privileged execution path. Operations
 not representable through declarative scalar expressions, including general

@@ -14,6 +14,9 @@ import {
   createMarkdownAdapter,
   createTypeScriptAdapter,
   deserializeChangePlan,
+  filesystemCreate,
+  filesystemMove,
+  filesystemRemove,
   filesystemWrite,
   fromAdapter,
   fromFilesystem,
@@ -37,6 +40,8 @@ import type {
   Adapter,
   ChangePlan,
   Diagnostic,
+  DslArgumentSchema,
+  DslArguments,
   DslEnvironment,
   FilesystemNodeKind,
   FilesystemSource,
@@ -526,6 +531,48 @@ const mergeEnvironment = <T>(label: string, builtIn: Readonly<Record<string, T>>
   return Object.freeze({ ...builtIn, ...plugin });
 };
 
+const operationArguments = (adapter: Adapter, kind: string): DslArgumentSchema => {
+  const operation = adapter.schema.operations.find((candidate) => candidate.kind === kind);
+  if (operation === undefined) throw new TypeError(`Adapter ${adapter.namespace} does not declare operation ${kind}.`);
+  const scalarTypes = ["string", "number", "boolean", "bigint", "null"] as const;
+  return Object.freeze(Object.fromEntries(Object.entries(operation.arguments).map(([name, argument]) => [
+    name,
+    Object.freeze({
+      type: argument.type === "unknown" ? scalarTypes : argument.type === "node-id" ? "string" : argument.type,
+      cardinality: argument.cardinality,
+      required: argument.required,
+      ...(argument.choices === undefined ? {} : { choices: argument.choices }),
+    }),
+  ])));
+};
+
+const stringArgument = (args: DslArguments, name: string): string => {
+  const value = args[name];
+  if (typeof value !== "string") throw new TypeError(`Filesystem argument ${name} must be a string.`);
+  return value;
+};
+
+const filesystemContent = (
+  args: DslArguments,
+  required: boolean,
+): { readonly encoding: "utf8" | "base64"; readonly content: string } | undefined => {
+  const encoding = args.encoding;
+  const content = args.content;
+  if (!required && encoding === undefined && content === undefined) return undefined;
+  if ((encoding !== "utf8" && encoding !== "base64") || typeof content !== "string") {
+    throw new TypeError("Filesystem content and its utf8 or base64 encoding must be supplied together.");
+  }
+  return Object.freeze({ encoding, content });
+};
+
+const requiredFilesystemContent = (
+  args: DslArguments,
+): { readonly encoding: "utf8" | "base64"; readonly content: string } => {
+  const content = filesystemContent(args, true);
+  if (content === undefined) throw new TypeError("Filesystem content is required.");
+  return content;
+};
+
 const createRuntime = async (config: ResolvedCliConfig, cwd: string) => {
   const filesystem = createFilesystemAdapter();
   const json = createJsonAdapter();
@@ -614,7 +661,35 @@ const createRuntime = async (config: ResolvedCliConfig, cwd: string) => {
     },
   };
   const builtInOperations: NonNullable<DslEnvironment["operations"]> = {
-    "fs::write": { adapter: filesystem, create: (target, args) => filesystemWrite(target.snapshot, { encoding: "utf8", content: String(args.content ?? "") }) },
+    "fs::write": {
+      adapter: filesystem,
+      arguments: operationArguments(filesystem, "fs::write"),
+      create: (target, args) => filesystemWrite(target.snapshot, requiredFilesystemContent(args)),
+    },
+    "fs::move": {
+      adapter: filesystem,
+      arguments: operationArguments(filesystem, "fs::move"),
+      create: (target, args) => filesystemMove(target.snapshot, stringArgument(args, "destination")),
+    },
+    "fs::remove": {
+      adapter: filesystem,
+      arguments: operationArguments(filesystem, "fs::remove"),
+      create: (target) => filesystemRemove(target.snapshot),
+    },
+    "fs::create": {
+      adapter: filesystem,
+      arguments: operationArguments(filesystem, "fs::create"),
+      create: (target, args) => {
+        const kind = stringArgument(args, "nodeKind");
+        if (kind !== "file" && kind !== "directory") throw new TypeError("Filesystem create nodeKind must be file or directory.");
+        return filesystemCreate(
+          target.snapshot,
+          stringArgument(args, "name"),
+          kind,
+          filesystemContent(args, false),
+        );
+      },
+    },
     "json::replace-value": { adapter: json, create: (target, args) => jsonReplaceValue(target.snapshot, args.value as JsonValue) },
     "json::insert-property": { adapter: json, create: (target, args) => jsonInsertProperty(target.snapshot, String(args.name ?? ""), args.value as JsonValue) },
     "json::remove-property": { adapter: json, create: (target) => jsonRemoveProperty(target.snapshot) },

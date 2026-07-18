@@ -195,7 +195,7 @@ const schema = defineAdapterSchema({
       kind: "fs::write",
       arguments: {
         content: { type: "string", cardinality: "one", required: true },
-        encoding: { type: "string", cardinality: "one", required: true },
+        encoding: { type: "string", cardinality: "one", required: true, choices: ["utf8", "base64"] },
       },
     },
     {
@@ -209,9 +209,9 @@ const schema = defineAdapterSchema({
       kind: "fs::create",
       arguments: {
         name: { type: "string", cardinality: "one", required: true },
-        nodeKind: { type: "string", cardinality: "one", required: true },
+        nodeKind: { type: "string", cardinality: "one", required: true, choices: ["file", "directory"] },
         content: { type: "string", cardinality: "one", required: false },
-        encoding: { type: "string", cardinality: "one", required: false },
+        encoding: { type: "string", cardinality: "one", required: false, choices: ["utf8", "base64"] },
       },
     },
   ],

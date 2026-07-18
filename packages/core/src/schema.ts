@@ -7,6 +7,7 @@ import {
   type NamespacedName,
   type NodeKind,
   type OperationKind,
+  type Scalar,
 } from "./model.js";
 
 export type ScalarType = "string" | "number" | "boolean" | "bigint" | "null";
@@ -42,6 +43,7 @@ export interface OperationArgumentSchema {
   readonly type: ScalarType | "node-id" | "unknown";
   readonly cardinality: Cardinality;
   readonly required: boolean;
+  readonly choices?: readonly Scalar[];
 }
 
 export interface OperationSchema {
@@ -119,6 +121,39 @@ const assertUnique = (label: string, values: readonly string[]): void => {
   }
 };
 
+const scalarTypeOf = (value: Scalar): ScalarType =>
+  value === null ? "null" : typeof value as Exclude<ScalarType, "null">;
+
+const validateOperationArgument = (name: string, argument: OperationArgumentSchema): void => {
+  if (argument.choices === undefined) return;
+  if (!Array.isArray(argument.choices)) {
+    throw new TypeError(`Operation argument ${name} choices must be an array.`);
+  }
+  if (argument.choices.some((choice) =>
+    choice === undefined ||
+    (typeof choice !== "string" &&
+      typeof choice !== "number" &&
+      typeof choice !== "boolean" &&
+      typeof choice !== "bigint" &&
+      choice !== null))) {
+    throw new TypeError(`Operation argument ${name} choices must contain only scalar values.`);
+  }
+  if (argument.choices.some((choice) =>
+    typeof choice === "bigint" || (typeof choice === "number" && !Number.isFinite(choice)))) {
+    throw new TypeError(`Operation argument ${name} choices must be JSON-serializable.`);
+  }
+  if (
+    argument.type !== "unknown" &&
+    argument.choices.some((choice) =>
+      scalarTypeOf(choice) !== (argument.type === "node-id" ? "string" : argument.type))
+  ) {
+    throw new TypeError(`Operation argument ${name} choices do not match its type.`);
+  }
+  if (new Set(argument.choices).size !== argument.choices.length) {
+    throw new TypeError(`Operation argument ${name} choices must be unique.`);
+  }
+};
+
 const validateSchema = (schema: AdapterSchema): void => {
   assertNamespace(schema.namespace);
   if (schema.version.length === 0) throw new TypeError("Schema version must not be empty.");
@@ -132,6 +167,9 @@ const validateSchema = (schema: AdapterSchema): void => {
   }
   for (const operation of schema.operations) {
     assertOwnedName(schema.namespace, "Operation", operation.kind);
+    for (const [name, argument] of Object.entries(operation.arguments)) {
+      validateOperationArgument(name, argument);
+    }
   }
   for (const tree of schema.treeViews) {
     assertOwnedName(schema.namespace, "Tree view", tree.name);
