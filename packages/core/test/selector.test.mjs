@@ -87,6 +87,28 @@ test("selectors compile to the query algebra with typed predicates and bag seman
   assert.equal(selected.explain().logical.operator, "filter");
 });
 
+test("separate graph paths retain duplicate nodes until distinct is explicit", async () => {
+  const graph = fixture();
+  const adapter = createInMemoryAdapter({
+    ...graph,
+    roots: ["root"],
+    nodes: [...graph.nodes, node("shared", "memory::leaf", { name: "shared" })],
+    edges: [
+      ...graph.edges,
+      edge("alpha", "shared", 1),
+      edge("beta", "shared", 1),
+    ],
+  });
+  const selected = select(
+    adapter,
+    { uri: "memory:selectors" },
+    'memory::leaf[name = "shared"]',
+  );
+
+  assert.deepEqual(await ids(selected), ["shared", "shared"]);
+  assert.deepEqual(await ids(selected.distinct()), ["shared"]);
+});
+
 test("predicates distinguish missing and null and support membership, regex, and pseudos", async () => {
   const adapter = createInMemoryAdapter(fixture());
   const source = { uri: "memory:selectors" };

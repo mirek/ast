@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -55,6 +55,29 @@ test("query streams stable redacted JSON Lines with diagnostics on stderr", asyn
     assert.match(warned.stdout, /"type":"data"/);
     assert.match(warned.stderr, /"type":"diagnostic"/);
     assert.equal(warned.stderr.includes("# One"), false);
+  }));
+
+test("filesystem selectors emit nested files once after the source walk", async () =>
+  fixture(async (root) => {
+    const nested = join(root, "nested");
+    const program = join(root, "files.dsl");
+    await mkdir(nested);
+    await writeFile(join(root, "root.ts"), "export {};\n");
+    await writeFile(join(nested, "nested.ts"), "export {};\n");
+    await writeFile(program, [
+      `from fs(${JSON.stringify(root)})`,
+      "| select 'fs::file[extension = \".ts\"]'",
+      "| project { path: @path }",
+      "| sort path",
+    ].join("\n"));
+
+    const result = await run(["query", program]);
+    assert.equal(result.code, 0);
+    assert.equal(result.stderr, "");
+    assert.deepEqual(
+      result.stdout.trim().split("\n").map(JSON.parse).map(({ value }) => value.path),
+      ["nested/nested.ts", "root.ts"],
+    );
   }));
 
 test("plan previews cannot apply and saved destructive plans require acknowledgements", async () =>
@@ -146,7 +169,7 @@ test("explicitly allowlisted plugins load as trusted code and enforce powers bef
       "const adapter = { contractVersion: '1', namespace: 'example', schema, read: { open: async (source) => ({ resource: { id: 'fixture', adapter: 'example', uri: source.uri }, close: async () => {} }), roots: async function* (resource) { for (let index = 0; index < 3; index += 1) yield { id: { adapter: 'example', resource: resource.id, local: String(index) }, kind: 'example::item', attributes: { index } }; }, edges: async function* () {}, hydrate: async () => [] } };",
       "export default {",
       "  manifest: { apiVersion: '1', name: '@example/ast-plugin', version: '1.0.0', integrity: 'sha256:fixture-1', namespaces: ['example'], powers: ['resource:read'], contributions: { adapters: ['example'], schemas: ['example'], resolvers: ['example::source'], mounts: [], operations: [], predicates: [], functions: [], renderers: [], diffProviders: [], optimizerRules: [] } },",
-      "  contributions: { adapters: [adapter], schemas: [schema], resolvers: [{ name: 'example::source', adapter, open: () => fromAdapter(adapter, { uri: 'example:fixture' }) }] },",
+      "  contributions: { adapters: [adapter], schemas: [schema], resolvers: [{ name: 'example::source', adapter, selectorSource: 'roots', open: () => fromAdapter(adapter, { uri: 'example:fixture' }) }] },",
       "};",
     ].join("\n"));
     const entry = {

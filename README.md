@@ -56,6 +56,9 @@ fixtures for adapter and selector development without filesystem effects.
 Selectors use namespaced kinds and edges and compile into that same algebra.
 Comparisons are checked against the adapter schema before execution; missing
 attributes remain distinct from explicit `null` values.
+`selectFrom` treats its input as resource roots by default. Pass
+`{ sourceMode: "selection" }` for an already walked or otherwise preselected
+node stream so matching does not recursively traverse every input row again.
 
 ```ts
 import { select } from "@mirek/ast";
@@ -283,7 +286,11 @@ neither cross-resource atomicity nor post-commit reversibility.
 `parseDsl`, `formatDsl`, and `compileDsl` provide a declarative pipeline surface
 over the same `Query`, selector, operation, and change-plan values used by the
 TypeScript API. A compile environment explicitly supplies named sources, mounts,
-and adapter operation constructors.
+and adapter operation constructors. Each source declares `selectorSource` as
+`"roots"` or `"selection"`; mounts establish a new rooted graph for the mounted
+adapter. The built-in filesystem source is a preselected recursive walk, so a
+following selector filters its rows once while preserving explicit bag
+semantics.
 
 ```text
 from ts("src/index.ts")

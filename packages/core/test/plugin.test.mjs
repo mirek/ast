@@ -82,7 +82,12 @@ const moduleFor = (manifestValue = manifest()) => {
     contributions: {
       adapters: [adapter],
       schemas: [schema],
-      resolvers: [{ name: "example::source", adapter, open: () => fromAdapter(adapter, { uri: "example:fixture" }) }],
+      resolvers: [{
+        name: "example::source",
+        adapter,
+        selectorSource: "roots",
+        open: () => fromAdapter(adapter, { uri: "example:fixture" }),
+      }],
       mounts: [{ name: "example::mount", adapter, mount: (query) => query }],
       operations: [{
         name: "example::noop",
@@ -169,6 +174,12 @@ test("unknown, duplicate, incompatible, unauthorized, and unsafe plugins fail be
   assert.throws(
     () => registerPlugins([unsafe], policy()),
     (error) => error.code === "plugin.invalid-optimizer-rule",
+  );
+  const invalidSelectorSource = moduleFor();
+  invalidSelectorSource.contributions.resolvers[0].selectorSource = "guess";
+  assert.throws(
+    () => registerPlugins([invalidSelectorSource], policy()),
+    (error) => error.code === "plugin.invalid-selector-source",
   );
   const staticSchema = moduleFor();
   staticSchema.contributions.schemas[0] = {

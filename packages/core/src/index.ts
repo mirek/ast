@@ -235,6 +235,7 @@ export type {
   SelectorPseudo,
   SelectorRegularExpression,
   SelectorSequence,
+  SelectorSourceMode,
   SelectorStep,
 } from "./selector.js";
 export { createSqlAdapter, fromSqlRows, sqlDeleteRows, sqlUpdateRows } from "./sql.js";

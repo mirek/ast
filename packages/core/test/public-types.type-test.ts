@@ -4,6 +4,7 @@ import type {
   ChangePlan,
   ApplyCapability,
   DynamicAdapterSchema,
+  DslEnvironment,
   FilesystemChange,
   FilesystemSource,
   FilesystemWriteOperation,
@@ -19,6 +20,7 @@ import type {
   PluginPower,
   PluginRegistry,
   ReadCapability,
+  SelectorSourceMode,
   SqlAdapter,
   SqlCatalog,
   SqlClient,
@@ -42,6 +44,7 @@ import {
   planOperations,
   project,
   registerPlugins,
+  selectFrom,
   fromSqlRows,
   sqlUpdateRows,
 } from "../src/index.js";
@@ -101,6 +104,24 @@ const filesystemSource: FilesystemSource = {
 };
 const filesystemQuery = fromFilesystem(createFilesystemAdapter(), filesystemSource);
 void filesystemQuery;
+const selectorSourceMode: SelectorSourceMode = "selection";
+const filesystemSelection = selectFrom(
+  filesystemQuery,
+  createFilesystemAdapter().schema,
+  "fs::file",
+  { sourceMode: selectorSourceMode },
+);
+void filesystemSelection;
+const dslEnvironment: DslEnvironment = {
+  sources: {
+    fs: {
+      adapter: createFilesystemAdapter(),
+      selectorSource: selectorSourceMode,
+      open: () => filesystemQuery,
+    },
+  },
+};
+void dslEnvironment;
 const observedFilesystem = createFilesystemAdapter({ clock: () => 0 });
 const filesystemIoDuration: number = observedFilesystem.statistics().ioDurationMs;
 void filesystemIoDuration;

@@ -21,9 +21,12 @@ import {
 } from "./query.js";
 import type { AdapterSchema, AttributeSchema, NodeKindSchema, ScalarType } from "./schema.js";
 
+export type SelectorSourceMode = "roots" | "selection";
+
 export interface SelectorOptions {
   readonly uri?: string;
   readonly treeView?: NamespacedName;
+  readonly sourceMode?: SelectorSourceMode;
 }
 
 export type SelectorCombinator =
@@ -1045,12 +1048,14 @@ export const selectFrom = (
 ): Query<NavigableNodeHandle, CaptureMap> => {
   const program = typeof selector === "string" ? parseSelector(selector, options) : selector;
   validateSelector(program, schema);
-  const roots = source.traverse({
-    edgeNames: childEdges(schema, options.treeView),
-    roles: ["child"],
-    maxDepth: Number.MAX_SAFE_INTEGER,
-    includeSelf: true,
-  });
+  const roots = options.sourceMode === "selection"
+    ? source
+    : source.traverse({
+        edgeNames: childEdges(schema, options.treeView),
+        roles: ["child"],
+        maxDepth: Number.MAX_SAFE_INTEGER,
+        includeSelf: true,
+      });
   const sequence = program.selectors[0];
   return sequence === undefined
     ? roots.take(0)

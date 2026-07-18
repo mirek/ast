@@ -570,6 +570,13 @@ Selections use bag semantics by default because separate paths may reach the
 same node. `distinct` removes duplicates by `NodeId`. An explicit `sort`
 establishes derived order and may require buffering.
 
+Selector compilation distinguishes resource-root inputs from preselected node
+streams. Root inputs expand through the selected tree view before matching;
+preselected streams match their existing rows without recursively walking each
+row again. This distinction prevents a recursive adapter source from inventing
+extra paths while preserving duplicates produced by distinct source or graph
+paths.
+
 ### 9.7 Query pipelines
 
 Selectors are embedded in a small pipeline language:
@@ -617,6 +624,12 @@ joins from the existing query algebra.
 
 `invoke` must be followed immediately by terminal `plan`. Source, mount, and
 operation names are resolved only through an explicit compile environment.
+Every source resolver declares whether it returns resource roots or a
+preselected stream. A mount begins a new rooted graph for its target adapter;
+therefore a selector after `mount` traverses the mounted tree, while a selector
+directly after the built-in recursive filesystem source matches the walked
+stream as-is. The TypeScript `selectFrom` API exposes the same choice through
+`sourceMode`, so textual and programmatic queries retain identical plans.
 There are deliberately no imports, modules, user functions, loops, arbitrary
 code evaluation, general recursion, or privileged execution path. Operations
 not representable through declarative scalar expressions, including general
@@ -839,6 +852,10 @@ The corresponding contribution object MAY provide:
 - selector predicates and scalar functions;
 - renderers and diff providers;
 - optimizer rules limited to declared logical equivalences.
+
+Each source-resolver contribution declares `selectorSource` as `roots` or
+`selection`; the host carries that scope into selector compilation instead of
+guessing from the returned query.
 
 Every contribution name is namespace-owned. Runtime-loaded schemas MUST declare
 `dynamic: true`, pass the normal schema validation, and exactly match the schema

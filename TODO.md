@@ -5,7 +5,6 @@ unless a prototype is explicitly intended to answer an earlier design question.
 When a task is complete, delete both its file and this index entry rather than
 marking it completed.
 
-- [Fix filesystem selector source semantics](./todo/filesystem-selector-source-semantics.md) — stop redundant recursive source and selector traversal from repeating filesystem rows.
 - [Add typed DSL source and mount options](./todo/dsl-source-and-mount-options.md) — validate and carry adapter read and mount configuration through textual programs.
 - [Make CLI input modes and diagnostic locations explicit](./todo/cli-input-modes-and-locations.md) — distinguish files, inline programs, saved plans, and stdin without existence guessing.
 - [Harden CLI argument and configuration validation](./todo/cli-argument-and-config-validation.md) — enforce command shapes, config schemas, help behavior, and usage exit codes.
