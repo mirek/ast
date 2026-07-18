@@ -45,7 +45,10 @@ const memoryEnvironment = () => {
         memory: {
           adapter,
           selectorSource: "roots",
-          open: ([uri]) => fromAdapter(adapter, { uri }),
+          arguments: {
+            uri: { type: "string", cardinality: "one", required: true },
+          },
+          open: (args) => fromAdapter(adapter, { uri: args.uri }),
         },
       },
     },
@@ -54,8 +57,8 @@ const memoryEnvironment = () => {
 
 test("DSL parsing preserves spans and formatting is deterministic", () => {
   const source = [
-    'let enabled = from memory("memory:fixture") | where @enabled = true;',
-    'from memory("memory:fixture")',
+    'let enabled = from memory({ uri: "memory:fixture" }) | where @enabled = true;',
+    'from memory({ uri: "memory:fixture" })',
     '| select \'memory::item[name ~= /a$/]\'',
     '| join enabled on @group = @group',
     '| project { left: $left.name, right: $right.name, missing: @missing }',
@@ -76,7 +79,7 @@ test("textual and programmatic queries compile to the same algebra behavior", as
   const { adapter, environment } = memoryEnvironment();
   const textual = compileDsl(
     [
-      'from memory("memory:fixture")',
+      'from memory({ uri: "memory:fixture" })',
       "| where @enabled = true",
       "| project { name: @name, uri: @origin.uri }",
       "| sort name",
@@ -110,8 +113,11 @@ test("repository inventory and semantic transformation programs are executable",
         fs: {
           adapter: filesystem,
           selectorSource: "selection",
-          open: ([uri]) => fromFilesystem(filesystem, {
-            uri,
+          arguments: {
+            uri: { type: "string", cardinality: "one", required: true },
+          },
+          open: (args) => fromFilesystem(filesystem, {
+            uri: args.uri,
             include: ["package.json"],
             kinds: ["fs::file"],
           }),
@@ -119,12 +125,16 @@ test("repository inventory and semantic transformation programs are executable",
         ts: {
           adapter: typescript,
           selectorSource: "roots",
-          open: ([uri]) => fromAdapter(typescript, { uri }),
+          arguments: {
+            uri: { type: "string", cardinality: "one", required: true },
+          },
+          open: (args) => fromAdapter(typescript, { uri: args.uri }),
         },
       },
       mounts: {
         json: {
           adapter: json,
+          arguments: {},
           mount: (query) => mountJson(query, json),
         },
       },
@@ -139,8 +149,8 @@ test("repository inventory and semantic transformation programs are executable",
 
     const inventory = compileDsl(
       [
-        `from fs(${JSON.stringify(root)})`,
-        "| mount json",
+        `from fs({ uri: ${JSON.stringify(root)} })`,
+        "| mount json()",
         "| select 'json::property[name = \"name\"] > json::scalar'",
         "| project { file: @origin.uri, name: @value }",
       ].join("\n"),
@@ -153,7 +163,7 @@ test("repository inventory and semantic transformation programs are executable",
 
     const transformation = compileDsl(
       [
-        `from ts(${JSON.stringify(join(root, "code.ts"))})`,
+        `from ts({ uri: ${JSON.stringify(join(root, "code.ts"))} })`,
         "| select 'ts::call[callee = \"oldCall\"]'",
         "| invoke ts::replace-call { callee: \"newCall\" }",
         "| plan",
@@ -182,12 +192,15 @@ test("filesystem stream selectors match an explicitly scoped TypeScript query", 
     const source = () => fromFilesystem(filesystem, { uri: root });
     const selector = 'fs::file[extension = ".ts"]';
     const textual = compileDsl(
-      `from fs(${JSON.stringify(root)}) | select '${selector}'`,
+      `from fs({ uri: ${JSON.stringify(root)} }) | select '${selector}'`,
       {
         sources: {
           fs: {
             adapter: filesystem,
             selectorSource: "selection",
+            arguments: {
+              uri: { type: "string", cardinality: "one", required: true },
+            },
             open: source,
           },
         },
@@ -211,18 +224,22 @@ test("filesystem stream selectors match an explicitly scoped TypeScript query", 
       kinds: ["fs::file"],
     });
     const mountedTextual = compileDsl(
-      `from fs(${JSON.stringify(root)}) | mount json | select 'json::scalar'`,
+      `from fs({ uri: ${JSON.stringify(root)} }) | mount json() | select 'json::scalar'`,
       {
         sources: {
           fs: {
             adapter: filesystem,
             selectorSource: "selection",
+            arguments: {
+              uri: { type: "string", cardinality: "one", required: true },
+            },
             open: jsonSource,
           },
         },
         mounts: {
           json: {
             adapter: json,
+            arguments: {},
             mount: (query) => mountJson(query, json),
           },
         },
@@ -244,12 +261,123 @@ test("filesystem stream selectors match an explicitly scoped TypeScript query", 
   }
 });
 
+test("source and mount argument schemas resolve named scalars, arrays, and defaults", async () => {
+  const { adapter } = memoryEnvironment();
+  let opened;
+  let mounted;
+  const environment = {
+    sources: {
+      memory: {
+        adapter,
+        selectorSource: "roots",
+        arguments: {
+          uri: { type: "string", cardinality: "one", required: true },
+          tags: { type: "string", cardinality: "many", required: false },
+          enabled: {
+            type: "boolean",
+            cardinality: "one",
+            required: false,
+            default: true,
+          },
+          token: {
+            type: "string",
+            cardinality: "one",
+            required: false,
+            sensitive: true,
+          },
+        },
+        open: (options) => {
+          opened = options;
+          return fromAdapter(adapter, { uri: options.uri });
+        },
+      },
+    },
+    mounts: {
+      passthrough: {
+        adapter,
+        arguments: {
+          mode: {
+            type: "string",
+            cardinality: "one",
+            required: true,
+            choices: ["safe"],
+          },
+          policy: {
+            type: "string",
+            cardinality: "one",
+            required: false,
+            default: "skip",
+            choices: ["skip", "throw"],
+          },
+        },
+        mount: (query, options) => {
+          mounted = options;
+          return query;
+        },
+      },
+    },
+  };
+  const compiled = compileDsl(
+    'from memory({ uri: "memory:fixture", tags: ["one", "two"], token: "DO-NOT-LEAK" }) | mount passthrough({ mode: "safe", policy: "throw" }) | count',
+    environment,
+  );
+
+  assert.equal(compiled.kind, "query");
+  assert.deepEqual(opened, {
+    uri: "memory:fixture",
+    tags: ["one", "two"],
+    enabled: true,
+    token: "DO-NOT-LEAK",
+  });
+  assert.equal(Object.isFrozen(opened), true);
+  assert.equal(Object.isFrozen(opened.tags), true);
+  assert.deepEqual(mounted, { mode: "safe", policy: "throw" });
+  assert.deepEqual(await compiled.query.toArray(), [3]);
+  assert.equal(JSON.stringify(compiled.query.explain()).includes("DO-NOT-LEAK"), false);
+
+  const invalid = [
+    ['from memory({ tags: ["one"] })', "dsl.missing-argument"],
+    ['from memory({ uri: "memory:fixture", extra: true })', "dsl.unknown-argument"],
+    ['from memory({ uri: ["memory:fixture"] })', "dsl.argument-cardinality"],
+    ['from memory({ uri: 1 })', "dsl.argument-type"],
+    ['from memory("memory:fixture")', "dsl.expected-arguments"],
+    [
+      'from memory({ uri: "memory:fixture" }) | mount passthrough({ mode: "safe", policy: "other" })',
+      "dsl.argument-choice",
+    ],
+    [
+      'from memory({ uri: "first", uri: "second" })',
+      "dsl.duplicate-argument",
+    ],
+    [
+      'from memory({ uri: "memory:fixture" }) | mount passthrough({ mode: "safe", extra: true })',
+      "dsl.unknown-argument",
+    ],
+    [
+      'from memory({ uri: "memory:fixture" }) | mount passthrough({})',
+      "dsl.missing-argument",
+    ],
+  ];
+  for (const [program, code] of invalid) {
+    assert.throws(
+      () => compileDsl(program, environment, { uri: "arguments.dsl" }),
+      (error) => {
+        assert(error instanceof DslError);
+        assert.equal(error.diagnostics[0]?.code, code);
+        assert.equal(error.diagnostics[0]?.locations[0]?.uri, "arguments.dsl");
+        assert.equal(error.diagnostics[0]?.locations[0]?.range?.start >= 0, true);
+        return true;
+      },
+    );
+  }
+});
+
 test("bindings and equality joins remain query-algebra operations", async () => {
   const { environment } = memoryEnvironment();
   const compiled = compileDsl(
     [
-      'let enabled = from memory("memory:fixture") | where @enabled = true;',
-      'from memory("memory:fixture")',
+      'let enabled = from memory({ uri: "memory:fixture" }) | where @enabled = true;',
+      'from memory({ uri: "memory:fixture" })',
       "| join enabled on @group = @group",
       "| project { left: $left.name, right: $right.name }",
       "| sort left, right",
@@ -267,7 +395,7 @@ test("bindings and equality joins remain query-algebra operations", async () => 
 
   const captured = compileDsl(
     [
-      'from memory("memory:fixture")',
+      'from memory({ uri: "memory:fixture" })',
       "| select 'memory::item as $item'",
       "| project { name: $item.name }",
       "| take 1",
@@ -285,19 +413,19 @@ test("parse, schema, capability, and planning diagnostics retain DSL spans", asy
     (error) => error instanceof DslError && error.diagnostics[0]?.locations[0]?.kind === "program",
   );
   assert.throws(
-    () => compileDsl('from missing("x")', environment, { uri: "unknown.dsl" }),
+    () => compileDsl('from missing({ uri: "x" })', environment, { uri: "unknown.dsl" }),
     (error) => error instanceof DslError && error.diagnostics[0]?.code === "dsl.unknown-source",
   );
   assert.throws(
-    () => compileDsl('from memory("memory:fixture") | select \'other::node\'', environment),
+    () => compileDsl('from memory({ uri: "memory:fixture" }) | select \'other::node\'', environment),
     (error) => error instanceof DslError && error.diagnostics[0]?.code === "selector.unknown-kind",
   );
   assert.throws(
-    () => compileDsl('from memory("memory:fixture") | invoke memory::missing {} | plan', environment),
+    () => compileDsl('from memory({ uri: "memory:fixture" }) | invoke memory::missing {} | plan', environment),
     (error) => error instanceof DslError && error.diagnostics[0]?.code === "dsl.unsupported-operation",
   );
   assert.throws(
-    () => compileDsl('from memory("memory:fixture") | where @enabled = "yes"', environment),
+    () => compileDsl('from memory({ uri: "memory:fixture" }) | where @enabled = "yes"', environment),
     (error) => error instanceof DslError && error.diagnostics[0]?.code === "dsl.type-mismatch",
   );
 
@@ -306,7 +434,7 @@ test("parse, schema, capability, and planning diagnostics retain DSL spans", asy
     planning: { async plan() { throw new Error("adapter refused plan"); } },
   };
   const planning = compileDsl(
-    'from memory("memory:fixture") | invoke memory::fail {} | plan',
+    'from memory({ uri: "memory:fixture" }) | invoke memory::fail {} | plan',
     {
       ...environment,
       operations: {

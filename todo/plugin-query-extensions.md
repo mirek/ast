@@ -1,7 +1,7 @@
 ---
 title: Connect plugin predicates and scalar functions to query execution
 summary: Make admitted query extensions callable through schema-checked selectors and DSL expressions, or narrow the public contract.
-depends_on: [dsl-source-and-mount-options]
+depends_on: []
 spec_sections: [9.4, 9.7, 14, 16]
 ---
 

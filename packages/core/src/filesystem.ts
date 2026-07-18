@@ -301,6 +301,20 @@ const pushedDown = (source: FilesystemSource): string => {
   return values.filter((value): value is string => value !== undefined).join(", ");
 };
 
+const explainedOptions = (source: FilesystemSource): string =>
+  ([
+    ["include", source.include],
+    ["exclude", source.exclude],
+    ["kinds", source.kinds],
+    ["minSize", source.minSize],
+    ["maxSize", source.maxSize],
+    ["modifiedAfter", source.modifiedAfter],
+    ["modifiedBefore", source.modifiedBefore],
+  ] as const)
+    .filter((entry) => entry[1] !== undefined)
+    .map(([name, value]) => `${name}=${JSON.stringify(value)}`)
+    .join(", ");
+
 const assertFiniteNumber = (label: string, value: number | undefined): void => {
   if (value !== undefined && !Number.isFinite(value)) {
     throw new TypeError(`${label} must be a finite number.`);
@@ -1054,6 +1068,7 @@ export const fromFilesystem = (
       label: "fs",
       details: {
         uri: pathToFileURL(sourcePath(source.uri)).href,
+        options: explainedOptions(source),
         pushdown: pushedDown(source),
       },
     },

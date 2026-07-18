@@ -86,9 +86,10 @@ const moduleFor = (manifestValue = manifest()) => {
         name: "example::source",
         adapter,
         selectorSource: "roots",
+        arguments: {},
         open: () => fromAdapter(adapter, { uri: "example:fixture" }),
       }],
-      mounts: [{ name: "example::mount", adapter, mount: (query) => query }],
+      mounts: [{ name: "example::mount", adapter, arguments: {}, mount: (query) => query }],
       operations: [{
         name: "example::noop",
         adapter,
@@ -135,8 +136,10 @@ test("plugin registration validates manifests and exposes only explicit aliases"
   assert.equal(registry.schemas.example.dynamic, true);
   assert.equal(registry.aliases.namespaces.ex, "example");
   assert.equal(registry.resolvers["example::source"].adapter, registry.adapters[0]);
+  assert.deepEqual(registry.resolvers["example::source"].arguments, {});
+  assert.deepEqual(registry.mounts["example::mount"].arguments, {});
   assert.equal(registry.dslEnvironment.sources.demo.adapter, registry.adapters[0]);
-  assert.equal((await registry.dslEnvironment.sources.demo.open([]).toArray()).length, 2);
+  assert.equal((await registry.dslEnvironment.sources.demo.open({}).toArray()).length, 2);
   assert.equal(registry.predicates["example::truthy"].test(1, []), true);
   assert.equal(registry.optimizerRules["example::identity-rule"].equivalence, "identity");
 });
@@ -180,6 +183,14 @@ test("unknown, duplicate, incompatible, unauthorized, and unsafe plugins fail be
   assert.throws(
     () => registerPlugins([invalidSelectorSource], policy()),
     (error) => error.code === "plugin.invalid-selector-source",
+  );
+  const invalidArgumentSchema = moduleFor();
+  invalidArgumentSchema.contributions.resolvers[0].arguments = {
+    uri: { type: "string", cardinality: "one", required: false, default: 1 },
+  };
+  assert.throws(
+    () => registerPlugins([invalidArgumentSchema], policy()),
+    (error) => error.code === "plugin.invalid-argument-schema",
   );
   const staticSchema = moduleFor();
   staticSchema.contributions.schemas[0] = {

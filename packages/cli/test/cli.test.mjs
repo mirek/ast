@@ -34,7 +34,7 @@ test("query streams stable redacted JSON Lines with diagnostics on stderr", asyn
     const program = join(root, "query.dsl");
     await writeFile(data, '{"name":"demo","password":"DO-NOT-LEAK"}\n');
     await writeFile(program, [
-      `from json(${JSON.stringify(data)})`,
+      `from json({ uri: ${JSON.stringify(data)} })`,
       "| select 'json::property[name = \"password\"] > json::scalar'",
       "| project { password: @value }",
     ].join("\n"));
@@ -49,7 +49,7 @@ test("query streams stable redacted JSON Lines with diagnostics on stderr", asyn
     const markdown = join(root, "warning.md");
     const warningProgram = join(root, "warning.dsl");
     await writeFile(markdown, "# One\n### Skipped\n");
-    await writeFile(warningProgram, `from markdown(${JSON.stringify(markdown)}) | select 'markdown::heading'`);
+    await writeFile(warningProgram, `from markdown({ uri: ${JSON.stringify(markdown)} }) | select 'markdown::heading'`);
     const warned = await run(["query", warningProgram]);
     assert.equal(warned.code, 0);
     assert.match(warned.stdout, /"type":"data"/);
@@ -65,7 +65,7 @@ test("filesystem selectors emit nested files once after the source walk", async 
     await writeFile(join(root, "root.ts"), "export {};\n");
     await writeFile(join(nested, "nested.ts"), "export {};\n");
     await writeFile(program, [
-      `from fs(${JSON.stringify(root)})`,
+      `from fs({ uri: ${JSON.stringify(root)} })`,
       "| select 'fs::file[extension = \".ts\"]'",
       "| project { path: @path }",
       "| sort path",
@@ -87,7 +87,7 @@ test("plan previews cannot apply and saved destructive plans require acknowledge
     const saved = join(root, "plan.json");
     await writeFile(source, "oldCall(1);\n");
     await writeFile(program, [
-      `from ts(${JSON.stringify(source)})`,
+      `from ts({ uri: ${JSON.stringify(source)} })`,
       "| select 'ts::call[callee = \"oldCall\"]'",
       "| invoke ts::replace-call { callee: \"newCall\" }",
       "| plan",
@@ -126,7 +126,7 @@ test("explain, schema, and plugins are machine-readable", async () =>
     const program = join(root, "explain.dsl");
     await writeFile(data, '[{"name":"b"},{"name":"a"}]\n');
     await writeFile(program, [
-      `from json(${JSON.stringify(data)})`,
+      `from json({ uri: ${JSON.stringify(data)} })`,
       "| select 'json::property[name = \"name\"] > json::scalar'",
       "| project { name: @value }",
       "| sort name",
@@ -135,9 +135,24 @@ test("explain, schema, and plugins are machine-readable", async () =>
     assert.equal(explained.code, 0);
     assert.equal(JSON.parse(explained.stdout).physical.buffering, true);
     const mountedProgram = join(root, "mounted.dsl");
-    await writeFile(mountedProgram, `from fs(${JSON.stringify(root)}) | mount json | select 'json::root'`);
+    await writeFile(mountedProgram, `from fs({ uri: ${JSON.stringify(root)} }) | mount json() | select 'json::root'`);
     const mounted = await run(["explain", mountedProgram]);
     assert.match(mounted.stdout, /mount json/);
+
+    const optionsProgram = join(root, "options.dsl");
+    await writeFile(optionsProgram, [
+      `from fs({ uri: ${JSON.stringify(root)}, include: ["**/*.json"], kinds: ["fs::file"] })`,
+      '| mount json({ onError: "throw" })',
+      "| select 'json::root'",
+    ].join("\n"));
+    const options = await run(["explain", optionsProgram]);
+    assert.equal(options.code, 0);
+    assert.match(options.stdout, /glob, kind/);
+    assert.match(options.stdout, /onError=throw/);
+
+    const invalidOptions = await run(["query", 'from json({ extra: true })']);
+    assert.equal(invalidOptions.code, 2);
+    assert.match(invalidOptions.stderr, /dsl\.(?:missing|unknown)-argument/);
     const schema = await run(["schema", "json"]);
     assert.equal(JSON.parse(schema.stdout).namespace, "json");
     const plugins = await run(["plugins"]);
@@ -150,7 +165,7 @@ test("configuration precedence and usage exit codes are deterministic", async ()
     const data = join(root, "data.json");
     const program = join(root, "query.dsl");
     await writeFile(data, '{"value":1}\n');
-    await writeFile(program, `from json(${JSON.stringify(data)}) | select 'json::scalar'`);
+    await writeFile(program, `from json({ uri: ${JSON.stringify(data)} }) | select 'json::scalar'`);
     const envPretty = await run(["query", program], { cwd: root, env: { AST_FORMAT: "jsonl" } });
     assert.match(envPretty.stdout, /"type":"data"/);
     const flagPretty = await run(["query", program, "--format", "pretty"], { cwd: root, env: { AST_FORMAT: "jsonl" } });
@@ -169,7 +184,7 @@ test("explicitly allowlisted plugins load as trusted code and enforce powers bef
       "const adapter = { contractVersion: '1', namespace: 'example', schema, read: { open: async (source) => ({ resource: { id: 'fixture', adapter: 'example', uri: source.uri }, close: async () => {} }), roots: async function* (resource) { for (let index = 0; index < 3; index += 1) yield { id: { adapter: 'example', resource: resource.id, local: String(index) }, kind: 'example::item', attributes: { index } }; }, edges: async function* () {}, hydrate: async () => [] } };",
       "export default {",
       "  manifest: { apiVersion: '1', name: '@example/ast-plugin', version: '1.0.0', integrity: 'sha256:fixture-1', namespaces: ['example'], powers: ['resource:read'], contributions: { adapters: ['example'], schemas: ['example'], resolvers: ['example::source'], mounts: [], operations: [], predicates: [], functions: [], renderers: [], diffProviders: [], optimizerRules: [] } },",
-      "  contributions: { adapters: [adapter], schemas: [schema], resolvers: [{ name: 'example::source', adapter, selectorSource: 'roots', open: () => fromAdapter(adapter, { uri: 'example:fixture' }) }] },",
+      "  contributions: { adapters: [adapter], schemas: [schema], resolvers: [{ name: 'example::source', adapter, selectorSource: 'roots', arguments: {}, open: () => fromAdapter(adapter, { uri: 'example:fixture' }) }] },",
       "};",
     ].join("\n"));
     const entry = {
@@ -205,7 +220,7 @@ test("an already-aborted invocation returns the cancellation exit code", async (
   let stdout = "";
   let stderr = "";
   const code = await runCli(
-    ["query", 'from json("missing.json")'],
+    ["query", 'from json({ uri: "missing.json" })'],
     {
       stdout: { write: (value) => { stdout += value; } },
       stderr: { write: (value) => { stderr += value; } },

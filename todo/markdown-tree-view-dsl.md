@@ -1,7 +1,7 @@
 ---
 title: Expose Markdown tree views in textual queries
 summary: Let DSL and CLI queries select the syntax tree or section tree explicitly and consistently.
-depends_on: [dsl-source-and-mount-options]
+depends_on: []
 spec_sections: [6.3, 7.2, 9.2, 13, 17.1]
 ---
 
@@ -12,10 +12,10 @@ use exactly the child edges declared by `markdown::section-tree`.
 
 # Finding
 
-The core adapter and TypeScript selector API support explicit tree views, but
-the CLI always opens Markdown with its default syntax tree. Selecting
-`markdown::section` from README produces no rows, and an extra source argument
-purporting to choose the section tree is silently ignored.
+The core adapter and TypeScript selector API support explicit tree views, and
+the DSL now validates named source options. The built-in Markdown resolver still
+publishes only its `uri` option and always opens the default syntax tree, so
+selecting `markdown::section` from README produces no rows.
 
 # Scope
 

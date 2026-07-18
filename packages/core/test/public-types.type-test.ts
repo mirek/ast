@@ -5,6 +5,8 @@ import type {
   ApplyCapability,
   DynamicAdapterSchema,
   DslEnvironment,
+  DslArgumentSchema,
+  DslArguments,
   FilesystemChange,
   FilesystemSource,
   FilesystemWriteOperation,
@@ -38,6 +40,7 @@ import {
   fromFilesystem,
   fromValues,
   jsonReplaceValue,
+  defineDslArgumentSchema,
   mountJson,
   mountMarkdown,
   mountTypeScript,
@@ -117,11 +120,24 @@ const dslEnvironment: DslEnvironment = {
     fs: {
       adapter: createFilesystemAdapter(),
       selectorSource: selectorSourceMode,
+      arguments: {
+        uri: { type: "string", cardinality: "one", required: true },
+      },
       open: () => filesystemQuery,
     },
   },
 };
 void dslEnvironment;
+const dslArgumentSchema: DslArgumentSchema = defineDslArgumentSchema({
+  uri: { type: "string", cardinality: "one", required: true },
+  include: { type: "string", cardinality: "many", required: false },
+});
+const dslArguments: DslArguments = {
+  uri: ".",
+  include: ["**/*.ts"],
+};
+void dslArgumentSchema;
+void dslArguments;
 const observedFilesystem = createFilesystemAdapter({ clock: () => 0 });
 const filesystemIoDuration: number = observedFilesystem.statistics().ioDurationMs;
 void filesystemIoDuration;

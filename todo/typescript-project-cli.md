@@ -1,7 +1,7 @@
 ---
 title: Add configured-project TypeScript workflows to the CLI
 summary: Allow CLI queries and transformations to use one explicitly configured TypeScript language service.
-depends_on: [dsl-source-and-mount-options]
+depends_on: []
 spec_sections: [7.2, 9.3, 10, 13, 17.1]
 ---
 
@@ -13,10 +13,11 @@ selected.
 
 # Finding
 
-The CLI always calls `createTypeScriptAdapter()` without a project. It advertises
-and registers `ts::rename-symbol`, but every CLI rename fails because semantic
-rename requires configured-project mode. Project symbol edges are likewise
-unreachable.
+The CLI now has a validated named source-option contract but still calls
+`createTypeScriptAdapter()` without a project and publishes only a `uri` option.
+It advertises and registers `ts::rename-symbol`, but every CLI rename fails
+because semantic rename requires configured-project mode. Project symbol edges
+are likewise unreachable.
 
 # Scope
 
