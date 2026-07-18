@@ -365,6 +365,8 @@ ast apply --file plan.json --yes --allow-destructive
 ast explain --file query.dsl
 ast schema json
 ast plugins
+ast --help
+ast --version
 ```
 
 `query`, `plan`, `apply`, and `explain` require exactly one of `--file`,
@@ -374,11 +376,21 @@ are always files, so a typo cannot be reinterpreted as DSL. Diagnostics identify
 file programs by their resolved path, inline programs as `argv:program`, and
 standard input as `stdin:program`.
 
+Options and positional arguments are command-specific: `plan` alone accepts
+`--save`, `apply` alone accepts confirmation and risk acknowledgements,
+`schema` requires one namespace, and `plugins` accepts none. Global and
+per-command help exit successfully. Unknown, duplicate, missing-value,
+irrelevant, and extra arguments emit `cli.usage` and exit 1.
+
 Piped queries emit stable JSON Lines on stdout and diagnostics as separate JSON
 Lines on stderr. Terminals default to readable indented values and redacted plan
 diffs. Planning cannot apply. Apply never prompts in automation and requires
 explicit confirmation plus risk acknowledgements. Flags override `AST_*`
-environment settings, which override `.astrc.json`.
+environment settings, which override `.astrc.json`. The config file is a closed,
+validated object containing only `format`, `color`, and structurally validated
+plugin entries; malformed files, invalid environment enums, unknown fields, and
+duplicate plugin identities or aliases emit `cli.invalid-config` and exit 1
+before plugin code is loaded.
 
 Exit codes distinguish usage (1), diagnostics and file-read failures (2),
 invalid plans (3), missing confirmation (4), apply failure (5), and
