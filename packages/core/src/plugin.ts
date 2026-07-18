@@ -65,7 +65,7 @@ export interface PluginMountContribution {
 export interface PluginOperationContribution {
   readonly name: NamespacedName;
   readonly adapter: Adapter;
-  create(target: NavigableNodeHandle, args: Readonly<Record<string, Scalar>>): Operation;
+  create(target: NavigableNodeHandle, args: DslArguments): Operation;
 }
 
 export interface PluginPredicateContribution {

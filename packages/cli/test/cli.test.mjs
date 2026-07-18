@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -173,6 +173,86 @@ test("selectors cross filesystem mount boundaries without losing adapter schemas
       assert.equal(result.code, 0, `${mount}: ${result.stderr}`);
       assert.equal(JSON.parse(result.stdout).value, 1);
     }
+  }));
+
+test("filesystem CLI operations preview and apply the complete encoded surface", async () =>
+  fixture(async (root) => {
+    await Promise.all([
+      writeFile(join(root, "write.bin"), "before"),
+      writeFile(join(root, "move.txt"), "move"),
+      writeFile(join(root, "remove.txt"), "remove"),
+      mkdir(join(root, "create-here")),
+    ]);
+    const source = (path, kind = "fs::file") =>
+      `from fs({ uri: ${JSON.stringify(root)}, include: [${JSON.stringify(path)}], kinds: ["${kind}"] })`;
+    const programs = [
+      {
+        name: "write",
+        program: `${source("write.bin")} | invoke fs::write { encoding: "base64", content: "AAEC/w==" } | plan`,
+        acknowledgement: ["--allow-destructive"],
+        verify: async () => assert.deepEqual([...await readFile(join(root, "write.bin"))], [0, 1, 2, 255]),
+      },
+      {
+        name: "move",
+        program: `${source("move.txt")} | invoke fs::move { destination: "moved.txt" } | plan`,
+        acknowledgement: [],
+        verify: async () => {
+          assert.equal(await readFile(join(root, "moved.txt"), "utf8"), "move");
+          await assert.rejects(readFile(join(root, "move.txt")), /ENOENT/);
+        },
+      },
+      {
+        name: "remove",
+        program: `${source("remove.txt")} | invoke fs::remove {} | plan`,
+        acknowledgement: ["--allow-destructive"],
+        verify: async () => assert.rejects(readFile(join(root, "remove.txt")), /ENOENT/),
+      },
+      {
+        name: "create-file",
+        program: `${source("create-here", "fs::directory")} | invoke fs::create { name: "created.txt", nodeKind: "file", encoding: "utf8", content: "created" } | plan`,
+        acknowledgement: [],
+        verify: async () => assert.equal(await readFile(join(root, "create-here", "created.txt"), "utf8"), "created"),
+      },
+      {
+        name: "create-directory",
+        program: `${source("create-here", "fs::directory")} | invoke fs::create { name: "nested", nodeKind: "directory" } | plan`,
+        acknowledgement: [],
+        verify: async () => assert.equal((await stat(join(root, "create-here", "nested"))).isDirectory(), true),
+      },
+    ];
+    for (const operation of programs) {
+      // oxlint-disable-next-line no-await-in-loop -- operations mutate sequential fixture revisions.
+      const preview = await run(["plan", "--expr", operation.program]);
+      assert.equal(preview.code, 0, `${operation.name}: ${preview.stderr}`);
+      // oxlint-disable-next-line no-await-in-loop -- each apply depends on its preview remaining effect-free.
+      const applied = await run(["apply", "--expr", operation.program, "--yes", ...operation.acknowledgement]);
+      assert.equal(applied.code, 0, `${operation.name}: ${applied.stderr}`);
+      // oxlint-disable-next-line no-await-in-loop -- verify after the corresponding apply.
+      await operation.verify();
+    }
+
+    const invalid = [
+      `${source("write.bin")} | invoke fs::write { content: "x" } | plan`,
+      `${source("write.bin")} | invoke fs::write { encoding: "hex", content: "00" } | plan`,
+      `${source("moved.txt")} | invoke fs::move {} | plan`,
+      `${source("create-here", "fs::directory")} | invoke fs::create { name: "bad", nodeKind: "link" } | plan`,
+    ];
+    await Promise.all(invalid.map(async (program) => {
+      const result = await run(["plan", "--expr", program]);
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /dsl\.(?:missing-argument|argument-choice)/);
+      assert.equal(JSON.parse(result.stderr).value.locations[0].uri, "argv:program");
+    }));
+
+    const duplicatePlan = join(root, "duplicate-plan.json");
+    const duplicate = [
+      `from fs({ uri: ${JSON.stringify(root)}, include: ["write.bin", "*.bin"], kinds: ["fs::file"] })`,
+      '| invoke fs::write { encoding: "utf8", content: "once" }',
+      "| plan",
+    ].join("\n");
+    const planned = await run(["plan", "--expr", duplicate, "--save", duplicatePlan]);
+    assert.equal(planned.code, 0);
+    assert.equal(JSON.parse(await readFile(duplicatePlan, "utf8")).plan.changes.length, 1);
   }));
 
 test("plan previews cannot apply and saved destructive plans require acknowledgements", async () =>

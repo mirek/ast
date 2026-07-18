@@ -114,7 +114,17 @@ test("resource, edge, schema, and diagnostic definitions are immutable", () => {
         ordering: "stable",
       },
     ],
-    operations: [],
+    operations: [{
+      kind: "memory::set-mode",
+      arguments: {
+        mode: {
+          type: "string",
+          cardinality: "one",
+          required: true,
+          choices: ["safe", "fast"],
+        },
+      },
+    }],
     treeViews: [
       {
         name: "memory::syntax",
@@ -149,6 +159,7 @@ test("resource, edge, schema, and diagnostic definitions are immutable", () => {
   }
   assert(Object.isFrozen(schema.kinds));
   assert(Object.isFrozen(schema.kinds[0]?.attributes));
+  assert(Object.isFrozen(schema.operations[0]?.arguments.mode.choices));
   assert(Object.isFrozen(diagnostic.locations));
 });
 
@@ -179,5 +190,35 @@ test("schema definitions enforce namespace ownership and one default tree", () =
         },
       }),
     /namespace memory/,
+  );
+  assert.throws(
+    () =>
+      defineAdapterSchema({
+        namespace: "memory",
+        version: "1.0.0",
+        dynamic: true,
+        kinds: [],
+        edges: [],
+        operations: [{
+          kind: "memory::set-mode",
+          arguments: {
+            mode: {
+              type: "string",
+              cardinality: "one",
+              required: true,
+              choices: [1],
+            },
+          },
+        }],
+        treeViews: [],
+        capabilities: {
+          traversal: [],
+          pushdown: [],
+          ordering: "unknown",
+          revisions: false,
+          transactions: "none",
+        },
+      }),
+    /choices do not match its type/,
   );
 });

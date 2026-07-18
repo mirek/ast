@@ -309,15 +309,31 @@ modules, user functions, arbitrary code execution, loops, or recursion. Parser,
 selector, schema/type, capability, and planning diagnostics retain DSL source
 locations, and `formatDsl` is deterministic.
 
-Sources and mounts accept one named argument object. Their compile-environment
-schemas validate scalar types, one/many cardinality, required fields, defaults,
-allowed choices, and unknown fields before opening a resource. For example:
+Sources, mounts, and operations accept one named argument object. Their
+compile-environment schemas validate scalar types, one/many cardinality,
+required fields, defaults, allowed choices, and unknown fields before opening a
+resource. For example:
 
 ```text
 from fs({ uri: ".", include: ["**/*.json"], kinds: ["fs::file"] })
 | mount json({ onError: "throw" })
 | select 'json::root'
 ```
+
+The CLI exposes every filesystem transformation with its schema-derived
+arguments. Content is never implicitly coerced, and binary bytes use base64:
+
+```text
+from fs({ uri: ".", include: ["asset.bin"], kinds: ["fs::file"] })
+| invoke fs::write { encoding: "base64", content: "AAEC/w==" }
+| plan
+```
+
+`fs::move` takes `destination`; `fs::remove` takes `{}`; and `fs::create` takes
+`name`, `nodeKind` (`"file"` or `"directory"`), plus paired `encoding` and
+`content` when initializing a file. Planning remains effect-free, while apply
+retains revision checks, absence preconditions, conflict detection, and risk
+acknowledgements.
 
 Filesystem explanations report the resolved safe options and pushed filters;
 sensitive argument definitions are not generically rendered.

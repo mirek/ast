@@ -39,7 +39,8 @@ export interface DslEnvironment {
   }>>;
   readonly operations?: Readonly<Record<string, {
     readonly adapter: Adapter;
-    create(target: NavigableNodeHandle, args: Readonly<Record<string, Scalar>>): Operation;
+    readonly arguments?: DslArgumentSchema;
+    create(target: NavigableNodeHandle, args: DslArguments): Operation;
   }>>;
 }
 
@@ -549,6 +550,15 @@ const parseObject = (step: DslStep, keyword: string, program: DslProgram): Reado
   return Object.freeze(result);
 };
 
+const parseObjectArguments = (step: DslStep, keyword: string, program: DslProgram): ParsedDslArguments => {
+  const prefix = new RegExp(`^${keyword}\\s+[^\\s{]+\\s*`, "u").exec(step.source)?.[0] ?? `${keyword} `;
+  const open = step.source.indexOf("{", Math.min(prefix.length, step.source.length));
+  const close = step.source.lastIndexOf("}");
+  if (open < 0 || close < open) return fail(program, "dsl.expected-object", `Expected an argument object after ${keyword}.`, step.range);
+  const start = step.range.start + open;
+  return parseArguments(program.source, { start, end: step.range.start + close + 1 }, program);
+};
+
 const isNode = (value: unknown): value is NavigableNodeHandle =>
   value !== null && typeof value === "object" && "snapshot" in value && "edges" in value;
 
@@ -600,8 +610,8 @@ interface PipelineState {
   readonly invocation?: {
     readonly step: DslStep;
     readonly adapter: Adapter;
-    readonly create: (target: NavigableNodeHandle, args: Readonly<Record<string, Scalar>>) => Operation;
-    readonly args: Readonly<Record<string, Scalar>>;
+    readonly create: (target: NavigableNodeHandle, args: DslArguments) => Operation;
+    readonly args: DslArguments;
   };
   readonly terminalPlan?: boolean;
 }
@@ -796,7 +806,10 @@ const compilePipeline = (
       const operation = name === undefined ? undefined : environment.operations?.[name];
       if (operation === undefined) return fail(program, "dsl.unsupported-operation", `Unknown or unsupported operation ${JSON.stringify(name)}.`, step.range);
       if (operation.adapter.planning === undefined) return fail(program, "dsl.missing-planning", `Adapter ${operation.adapter.namespace} cannot plan operations.`, step.range);
-      state = { ...state, invocation: { step, adapter: operation.adapter, create: operation.create, args: parseObject(step, "invoke", program) } };
+      const args = operation.arguments === undefined
+        ? parseObject(step, "invoke", program)
+        : resolveArguments(operation.arguments, parseObjectArguments(step, "invoke", program), program, step.range);
+      state = { ...state, invocation: { step, adapter: operation.adapter, create: operation.create, args } };
       continue;
     }
     if (step.kind === "plan") {
