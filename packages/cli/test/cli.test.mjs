@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +17,23 @@ const fixture = async (run) => {
 };
 
 const run = async (args, options = {}) => {
+  if (options.input !== undefined) {
+    return new Promise((resolve) => {
+      const child = spawn(process.execPath, [cli, ...args], {
+        cwd: options.cwd,
+        env: { ...process.env, NO_COLOR: "1", ...options.env },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (value) => { stdout += value; });
+      child.stderr.on("data", (value) => { stderr += value; });
+      child.once("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
+      child.stdin.end(options.input);
+    });
+  }
   try {
     const result = await execute(process.execPath, [cli, ...args], {
       cwd: options.cwd,
@@ -27,6 +44,53 @@ const run = async (args, options = {}) => {
     return { code: error.code, stdout: error.stdout, stderr: error.stderr };
   }
 };
+
+test("explicit file, expression, and stdin modes keep truthful locations", async () =>
+  fixture(async (root) => {
+    const data = join(root, "input.json");
+    const program = join(root, "input.dsl");
+    const source = `from json({ uri: ${JSON.stringify(data)} }) | select 'json::scalar'`;
+    await writeFile(data, '{"value":1}\n');
+    await writeFile(program, source);
+
+    const file = await run(["query", "--file", program]);
+    const expression = await run(["query", "--expr", source]);
+    const stdin = await run(["query", "--stdin"], { input: source });
+    assert.equal(file.code, 0);
+    assert.deepEqual(expression, file);
+    assert.deepEqual(stdin, file);
+
+    const missing = await run(["query", join(root, "missing.dsl")]);
+    assert.equal(missing.code, 2);
+    assert.match(missing.stderr, /missing\.dsl/);
+    assert.doesNotMatch(missing.stderr, /dsl\.(?:invalid|expected)/);
+
+    const invalidProgram = join(root, "invalid.dsl");
+    await writeFile(invalidProgram, "from missing()");
+    const fileFailure = await run(["query", "--file", invalidProgram]);
+    assert.equal(fileFailure.code, 2);
+    assert.equal(JSON.parse(fileFailure.stderr).value.locations[0].uri, invalidProgram);
+    const inlineFailure = await run(["query", "--expr", "from missing()"]);
+    assert.equal(inlineFailure.code, 2);
+    assert.equal(JSON.parse(inlineFailure.stderr).value.locations[0].uri, "argv:program");
+    const stdinFailure = await run(["query", "-"], { input: "from missing()" });
+    assert.equal(stdinFailure.code, 2);
+    assert.equal(JSON.parse(stdinFailure.stderr).value.locations[0].uri, "stdin:program");
+
+    const markdown = join(root, "warning.md");
+    await writeFile(markdown, "# One\n### Skipped\n");
+    const piped = await run(
+      ["query", "--stdin"],
+      { input: `from markdown({ uri: ${JSON.stringify(markdown)} }) | select 'markdown::heading'` },
+    );
+    assert.equal(piped.code, 0);
+    assert.match(piped.stdout, /"type":"data"/);
+    assert.match(piped.stderr, /"type":"diagnostic"/);
+
+    const ambiguous = await run(["query", "--file", program, "--expr", source]);
+    assert.equal(ambiguous.code, 1);
+    assert.match(ambiguous.stderr, /exactly one input mode/i);
+  }));
 
 test("query streams stable redacted JSON Lines with diagnostics on stderr", async () =>
   fixture(async (root) => {
@@ -150,7 +214,7 @@ test("explain, schema, and plugins are machine-readable", async () =>
     assert.match(options.stdout, /glob, kind/);
     assert.match(options.stdout, /onError=throw/);
 
-    const invalidOptions = await run(["query", 'from json({ extra: true })']);
+    const invalidOptions = await run(["query", "--expr", 'from json({ extra: true })']);
     assert.equal(invalidOptions.code, 2);
     assert.match(invalidOptions.stderr, /dsl\.(?:missing|unknown)-argument/);
     const schema = await run(["schema", "json"]);
@@ -201,7 +265,7 @@ test("explicitly allowlisted plugins load as trusted code and enforce powers bef
     assert.equal(pluginRow.plugin.name, "@example/ast-plugin");
     assert.equal(pluginRow.trustedCode, true);
     assert.equal(pluginRow.isolated, false);
-    const queried = await run(["query", "from demo() | count", "--config", config]);
+    const queried = await run(["query", "--expr", "from demo() | count", "--config", config]);
     assert.equal(queried.code, 0);
     assert.equal(JSON.parse(queried.stdout).value, 3);
     const schema = await run(["schema", "ex", "--config", config]);
@@ -220,7 +284,7 @@ test("an already-aborted invocation returns the cancellation exit code", async (
   let stdout = "";
   let stderr = "";
   const code = await runCli(
-    ["query", 'from json({ uri: "missing.json" })'],
+    ["query", "--expr", 'from json({ uri: "missing.json" })'],
     {
       stdout: { write: (value) => { stdout += value; } },
       stderr: { write: (value) => { stderr += value; } },
@@ -232,6 +296,43 @@ test("an already-aborted invocation returns the cancellation exit code", async (
     },
   );
   assert.equal(code, EXIT.cancelled);
+  assert.equal(stdout, "");
+  assert.equal(stderr, "");
+});
+
+test("cancellation interrupts a blocked standard-input read", async () => {
+  const { runCli, EXIT } = await import("../dist/index.js");
+  const controller = new AbortController();
+  let startedRead;
+  const reading = new Promise((resolve) => { startedRead = resolve; });
+  const stdin = {
+    [Symbol.asyncIterator]: () => ({
+      next: () => {
+        startedRead();
+        return new Promise(() => {});
+      },
+      return: async () => ({ done: true }),
+    }),
+  };
+  let stdout = "";
+  let stderr = "";
+  const result = runCli(
+    ["query", "--stdin"],
+    {
+      stdout: { write: (value) => { stdout += value; } },
+      stderr: { write: (value) => { stderr += value; } },
+      stdin,
+      stdinIsTTY: false,
+      stdoutIsTTY: false,
+      cwd: process.cwd(),
+      env: { NO_COLOR: "1" },
+      signal: controller.signal,
+    },
+  );
+  await reading;
+  controller.abort(new Error("cancelled"));
+
+  assert.equal(await result, EXIT.cancelled);
   assert.equal(stdout, "");
   assert.equal(stderr, "");
 });

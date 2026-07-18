@@ -794,13 +794,23 @@ API. Neither interface receives privileged runtime behavior.
 The CLI SHOULD support:
 
 ```text
-ast query <program>
-ast plan <program> [--save plan.json]
-ast apply <program-or-plan> --yes [risk acknowledgements]
-ast explain <program>
+ast query <input>
+ast plan <input> [--save plan.json]
+ast apply <input> --yes [risk acknowledgements]
+ast explain <input>
 ast schema <namespace>
 ast plugins
 ```
+
+For `query`, `plan`, `apply`, and `explain`, `<input>` selects exactly one
+input medium: `--file <path>`, `--expr <program>`, or `--stdin`. A single
+positional path remains deterministic shorthand for `--file`, and the exact
+positional value `-` is shorthand for `--stdin`; no other positional value is
+ever reinterpreted as inline DSL. Missing files therefore fail as file reads.
+File program diagnostics use the resolved absolute path, while inline and
+standard input programs use the stable non-file URIs `argv:program` and
+`stdin:program`. Ambiguous input combinations are usage failures, and
+cancellation interrupts a pending standard-input read.
 
 The executable and product name is `ast`; the package remains
 `@mirek/ast-cli` while private.
@@ -825,7 +835,7 @@ color configuration; the initial renderer emits no ANSI color.
 and requires `--yes`, plus `--allow-destructive` or `--allow-irreversible` for
 those risks. Saved-plan envelopes are recognized strictly and cannot fall back
 to DSL after integrity or compatibility failure. SIGINT cancels through an
-`AbortSignal` and exits 130.
+`AbortSignal`, including during standard-input reads, and exits 130.
 
 Exit statuses are 0 success, 1 usage/configuration, 2 execution or diagnostic
 error, 3 invalid plan, 4 missing confirmation/policy acknowledgement, 5 apply

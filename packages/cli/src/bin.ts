@@ -6,6 +6,7 @@ process.once("SIGINT", () => controller.abort(new Error("Interrupted")));
 const code = await runCli(process.argv.slice(2), {
   stdout: process.stdout,
   stderr: process.stderr,
+  stdin: process.stdin,
   stdinIsTTY: process.stdin.isTTY === true,
   stdoutIsTTY: process.stdout.isTTY === true,
   cwd: process.cwd(),

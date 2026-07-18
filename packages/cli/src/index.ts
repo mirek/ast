@@ -50,6 +50,7 @@ import type {
 export interface CliIo {
   readonly stdout: { write(value: string): unknown };
   readonly stderr: { write(value: string): unknown };
+  readonly stdin?: AsyncIterable<string | Uint8Array>;
   readonly stdinIsTTY: boolean;
   readonly stdoutIsTTY: boolean;
   readonly cwd: string;
@@ -70,6 +71,9 @@ export const EXIT = Object.freeze({
 interface ParsedArguments {
   readonly command: string;
   readonly positional: readonly string[];
+  readonly file?: string;
+  readonly expression?: string;
+  readonly stdin: boolean;
   readonly format?: "jsonl" | "pretty";
   readonly color?: "auto" | "always" | "never";
   readonly config?: string;
@@ -98,7 +102,16 @@ interface ResolvedCliConfig {
   readonly plugins: readonly CliPluginConfig[];
 }
 
-const usage = "Usage: ast <query|plan|apply|explain|schema|plugins> [program-or-name] [options]\n";
+class CliUsageError extends TypeError {
+  override readonly name = "CliUsageError";
+}
+
+const usage = [
+  "Usage: ast <query|plan|apply|explain> (--file <path> | --expr <program> | --stdin) [options]",
+  "       ast <query|plan|apply|explain> <file-path|-> [options]",
+  "       ast <schema|plugins> [name] [options]",
+  "",
+].join("\n");
 
 const parseArguments = (args: readonly string[]): ParsedArguments => {
   const command = args[0] ?? "";
@@ -107,15 +120,22 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
   let color: ParsedArguments["color"];
   let config: string | undefined;
   let save: string | undefined;
+  let file: string | undefined;
+  let expression: string | undefined;
+  let stdin = false;
   let yes = false;
   let allowDestructive = false;
   let allowIrreversible = false;
   for (let index = 1; index < args.length; index += 1) {
     const value = args[index] ?? "";
     if (value === "--yes") yes = true;
+    else if (value === "--stdin") {
+      if (stdin) throw new CliUsageError("--stdin may be specified only once.");
+      stdin = true;
+    }
     else if (value === "--allow-destructive") allowDestructive = true;
     else if (value === "--allow-irreversible") allowIrreversible = true;
-    else if (["--format", "--color", "--config", "--save"].includes(value)) {
+    else if (["--format", "--color", "--config", "--save", "--file", "--expr"].includes(value)) {
       const next = args[index + 1];
       if (next === undefined) throw new TypeError(`${value} requires a value.`);
       index += 1;
@@ -126,11 +146,31 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
         if (next !== "auto" && next !== "always" && next !== "never") throw new TypeError("Color must be auto, always, or never.");
         color = next;
       } else if (value === "--config") config = next;
-      else save = next;
+      else if (value === "--save") save = next;
+      else if (value === "--file") {
+        if (file !== undefined) throw new CliUsageError("--file may be specified only once.");
+        file = next;
+      } else {
+        if (expression !== undefined) throw new CliUsageError("--expr may be specified only once.");
+        expression = next;
+      }
     } else if (value.startsWith("--")) throw new TypeError(`Unknown option ${value}.`);
     else positional.push(value);
   }
-  return { command, positional, ...(format === undefined ? {} : { format }), ...(color === undefined ? {} : { color }), ...(config === undefined ? {} : { config }), ...(save === undefined ? {} : { save }), yes, allowDestructive, allowIrreversible };
+  return {
+    command,
+    positional,
+    ...(file === undefined ? {} : { file }),
+    ...(expression === undefined ? {} : { expression }),
+    stdin,
+    ...(format === undefined ? {} : { format }),
+    ...(color === undefined ? {} : { color }),
+    ...(config === undefined ? {} : { config }),
+    ...(save === undefined ? {} : { save }),
+    yes,
+    allowDestructive,
+    allowIrreversible,
+  };
 };
 
 const loadConfig = async (parsed: ParsedArguments, io: CliIo): Promise<ResolvedCliConfig> => {
@@ -331,9 +371,87 @@ const createRuntime = async (config: ResolvedCliConfig, cwd: string) => {
   return { adapters, environment, plugins, schemas };
 };
 
-const inputText = async (value: string, cwd: string): Promise<string> => {
-  try { return await readFile(resolve(cwd, value), "utf8"); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return value; throw error; }
+type CliInput =
+  | { readonly kind: "file"; readonly value: string; readonly uri: string }
+  | { readonly kind: "expression"; readonly value: string; readonly uri: "argv:program" }
+  | { readonly kind: "stdin"; readonly uri: "stdin:program" };
+
+const resolveInput = (parsed: ParsedArguments, cwd: string): CliInput => {
+  if (parsed.positional.length > 1) {
+    throw new CliUsageError("Input commands accept at most one positional file path.");
+  }
+  const inputs: CliInput[] = [];
+  if (parsed.file !== undefined) {
+    const path = resolve(cwd, parsed.file);
+    inputs.push({ kind: "file", value: path, uri: path });
+  }
+  if (parsed.expression !== undefined) {
+    inputs.push({ kind: "expression", value: parsed.expression, uri: "argv:program" });
+  }
+  if (parsed.stdin) inputs.push({ kind: "stdin", uri: "stdin:program" });
+  const positional = parsed.positional[0];
+  if (positional === "-") inputs.push({ kind: "stdin", uri: "stdin:program" });
+  else if (positional !== undefined) {
+    const path = resolve(cwd, positional);
+    inputs.push({ kind: "file", value: path, uri: path });
+  }
+  const input = inputs[0];
+  if (inputs.length !== 1 || input === undefined) {
+    throw new CliUsageError(
+      "Input commands require exactly one input mode: --file, --expr, --stdin, a file path, or -.",
+    );
+  }
+  return input;
+};
+
+const nextWithSignal = <Value>(
+  iterator: AsyncIterator<Value>,
+  signal: AbortSignal | undefined,
+): Promise<IteratorResult<Value>> => {
+  if (signal === undefined) return iterator.next();
+  signal.throwIfAborted();
+  return new Promise((resolveNext, reject) => {
+    const cleanup = (): void => signal.removeEventListener("abort", aborted);
+    const aborted = (): void => {
+      cleanup();
+      reject(signal.reason instanceof Error ? signal.reason : new Error("Input cancelled."));
+    };
+    signal.addEventListener("abort", aborted, { once: true });
+    iterator.next().then(
+      (value) => { cleanup(); resolveNext(value); },
+      (error: unknown) => { cleanup(); reject(error); },
+    );
+  });
+};
+
+const stdinText = async (
+  stdin: AsyncIterable<string | Uint8Array> | undefined,
+  signal: AbortSignal | undefined,
+): Promise<string> => {
+  if (stdin === undefined) throw new CliUsageError("Standard input is unavailable.");
+  const iterator = stdin[Symbol.asyncIterator]();
+  const decoder = new TextDecoder();
+  let result = "";
+  try {
+    while (true) {
+      // oxlint-disable-next-line no-await-in-loop -- stdin must be decoded in stream order.
+      const next = await nextWithSignal(iterator, signal);
+      if (next.done) break;
+      result += typeof next.value === "string"
+        ? next.value
+        : decoder.decode(next.value, { stream: true });
+    }
+    return result + decoder.decode();
+  } finally {
+    await iterator.return?.();
+  }
+};
+
+const readInput = async (input: CliInput, io: CliIo): Promise<string> => {
+  io.signal?.throwIfAborted();
+  if (input.kind === "expression") return input.value;
+  if (input.kind === "stdin") return stdinText(io.stdin, io.signal);
+  return readFile(input.value, "utf8");
 };
 
 const diagnosticsOf = (adapters: readonly Adapter[]): readonly Diagnostic[] => adapters.flatMap((adapter) => adapter.diagnostics?.() ?? []);
@@ -359,9 +477,8 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
       io.stdout.write(`${JSON.stringify(values, undefined, config.format === "pretty" ? 2 : undefined)}\n`);
       return EXIT.success;
     }
-    const input = parsed.positional[0];
-    if (input === undefined) { io.stderr.write(usage); return EXIT.usage; }
-    const text = await inputText(input, io.cwd);
+    const input = resolveInput(parsed, io.cwd);
+    const text = await readInput(input, io);
     let savedPlan: ChangePlan | undefined;
     if (parsed.command === "apply") {
       let envelope = false;
@@ -378,7 +495,9 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
         }
       }
     }
-    const compiled = savedPlan === undefined ? compileDsl(text, runtime.environment, { uri: resolve(io.cwd, input) }) : undefined;
+    const compiled = savedPlan === undefined
+      ? compileDsl(text, runtime.environment, { uri: input.uri })
+      : undefined;
     if (parsed.command === "query") {
       if (compiled?.kind !== "query") throw new TypeError("query requires a query program.");
       for await (const value of compiled.query.iterate(io.signal === undefined ? {} : { signal: io.signal })) emit(io, config.format, value);
@@ -422,6 +541,10 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
     return result.groups.some(({ status }) => status === "failed") ? EXIT.apply : EXIT.success;
   } catch (error) {
     if (io.signal?.aborted === true || (error instanceof Error && error.name === "AbortError")) return EXIT.cancelled;
+    if (error instanceof CliUsageError) {
+      io.stderr.write(`${error.message}\n${usage}`);
+      return EXIT.usage;
+    }
     if (error instanceof DslError) for (const value of error.diagnostics) emitDiagnostic(io, value);
     else if (error instanceof PluginError) io.stderr.write(line({ type: "diagnostic", value: { code: error.code, severity: "error", message: error.message } }));
     else io.stderr.write(line({ type: "diagnostic", value: { code: "cli.error", severity: "error", message: error instanceof Error ? error.message : "Unknown CLI failure." } }));

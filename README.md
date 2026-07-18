@@ -358,13 +358,21 @@ different declared implementation, but it does not attest module bytes.
 `@mirek/ast-cli` provides the `ast` executable:
 
 ```sh
-ast query query.dsl
-ast plan transform.dsl --save plan.json
-ast apply plan.json --yes --allow-destructive
-ast explain query.dsl
+ast query --file query.dsl
+ast query --expr 'from fs({ uri: "." }) | select "fs::file"'
+ast plan --stdin --save plan.json < transform.dsl
+ast apply --file plan.json --yes --allow-destructive
+ast explain --file query.dsl
 ast schema json
 ast plugins
 ```
+
+`query`, `plan`, `apply`, and `explain` require exactly one of `--file`,
+`--expr`, or `--stdin`. A positional file path remains supported as shorthand
+for `--file`, and positional `-` means standard input. Other positional values
+are always files, so a typo cannot be reinterpreted as DSL. Diagnostics identify
+file programs by their resolved path, inline programs as `argv:program`, and
+standard input as `stdin:program`.
 
 Piped queries emit stable JSON Lines on stdout and diagnostics as separate JSON
 Lines on stderr. Terminals default to readable indented values and redacted plan
@@ -372,11 +380,12 @@ diffs. Planning cannot apply. Apply never prompts in automation and requires
 explicit confirmation plus risk acknowledgements. Flags override `AST_*`
 environment settings, which override `.astrc.json`.
 
-Exit codes distinguish usage (1), diagnostics (2), invalid plans (3), missing
-confirmation (4), apply failure (5), and cancellation (130). SIGINT propagates
-through query/apply cancellation. Rendered values redact conventional secret,
-token, password, credential, and API-key fields. Explicitly saved plans contain
-private adapter payloads and should be treated as sensitive files.
+Exit codes distinguish usage (1), diagnostics and file-read failures (2),
+invalid plans (3), missing confirmation (4), apply failure (5), and
+cancellation (130). SIGINT propagates through standard-input reads and
+query/apply execution. Rendered values redact conventional secret, token,
+password, credential, and API-key fields. Explicitly saved plans contain private
+adapter payloads and should be treated as sensitive files.
 
 ## Architecture conformance
 
