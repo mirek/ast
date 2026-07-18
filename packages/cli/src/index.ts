@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -90,6 +90,7 @@ interface ParsedArguments {
   readonly save?: string;
   readonly renderer?: string;
   readonly diffProvider?: string;
+  readonly project?: string;
   readonly yes: boolean;
   readonly allowDestructive: boolean;
   readonly allowIrreversible: boolean;
@@ -98,6 +99,7 @@ interface ParsedArguments {
 interface CliConfig {
   readonly format?: "jsonl" | "pretty";
   readonly color?: "auto" | "always" | "never";
+  readonly typescriptProject?: string;
   readonly plugins?: readonly CliPluginConfig[];
 }
 
@@ -112,6 +114,7 @@ interface ResolvedCliConfig {
   readonly format: "jsonl" | "pretty";
   readonly color: "auto" | "always" | "never";
   readonly plugins: readonly CliPluginConfig[];
+  readonly typescriptProject?: string;
 }
 
 class CliUsageError extends TypeError {
@@ -146,6 +149,7 @@ const usage = [
   "  --format <jsonl|pretty>   Select output formatting.",
   "  --color <auto|always|never> Select color policy.",
   "  --config <path>          Read configuration from a specific file.",
+  "  --project <path>         Configure one TypeScript project.",
   "  -h, --help               Show help.",
   "  -V, --version            Show the CLI version.",
   "",
@@ -163,6 +167,7 @@ const commonHelp = [
   "  --format <jsonl|pretty>  Select output formatting.",
   "  --color <auto|always|never> Select color policy.",
   "  --config <path>          Read configuration from a specific file.",
+  "  --project <path>         Configure one TypeScript project.",
   "  -h, --help               Show this help.",
 ];
 const commandHelp: Readonly<Record<CliCommand, string>> = Object.freeze({
@@ -188,6 +193,7 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
   let save: string | undefined;
   let renderer: string | undefined;
   let diffProvider: string | undefined;
+  let project: string | undefined;
   let file: string | undefined;
   let expression: string | undefined;
   let stdin = false;
@@ -212,7 +218,7 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
     }
     else if (value === "--allow-destructive") { use(value); allowDestructive = true; }
     else if (value === "--allow-irreversible") { use(value); allowIrreversible = true; }
-    else if (["--format", "--color", "--config", "--save", "--file", "--expr", "--renderer", "--diff-provider"].includes(value)) {
+    else if (["--format", "--color", "--config", "--project", "--save", "--file", "--expr", "--renderer", "--diff-provider"].includes(value)) {
       const next = args[index + 1];
       if (next === undefined || (next.startsWith("-") && next !== "-")) throw new CliUsageError(`${value} requires a value.`);
       use(value);
@@ -224,6 +230,7 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
         if (next !== "auto" && next !== "always" && next !== "never") throw new CliUsageError("Color must be auto, always, or never.");
         color = next;
       } else if (value === "--config") config = next;
+      else if (value === "--project") project = next;
       else if (value === "--save") save = next;
       else if (value === "--renderer") renderer = next;
       else if (value === "--diff-provider") diffProvider = next;
@@ -246,13 +253,14 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
     ...(save === undefined ? {} : { save }),
     ...(renderer === undefined ? {} : { renderer }),
     ...(diffProvider === undefined ? {} : { diffProvider }),
+    ...(project === undefined ? {} : { project }),
     yes,
     allowDestructive,
     allowIrreversible,
   };
 };
 
-const commonOptions = ["--format", "--color", "--config", "--help"] as const;
+const commonOptions = ["--format", "--color", "--config", "--project", "--help"] as const;
 const inputOptions = ["--file", "--expr", "--stdin"] as const;
 const allowedOptions: Readonly<Record<CliCommand, readonly string[]>> = Object.freeze({
   query: [...commonOptions, ...inputOptions, "--renderer"],
@@ -356,7 +364,7 @@ const validatePluginConfig = (value: unknown, index: number): CliPluginConfig =>
 
 const validateCliConfig = (value: unknown): CliConfig => {
   const config = configRecord(value, "CLI config");
-  validateKeys(config, ["format", "color", "plugins"], "CLI config");
+  validateKeys(config, ["format", "color", "typescriptProject", "plugins"], "CLI config");
   if (config.format !== undefined && config.format !== "jsonl" && config.format !== "pretty") {
     throw new CliConfigError("CLI config format must be jsonl or pretty.");
   }
@@ -384,6 +392,9 @@ const validateCliConfig = (value: unknown): CliConfig => {
   return Object.freeze({
     ...(config.format === undefined ? {} : { format: config.format }),
     ...(config.color === undefined ? {} : { color: config.color }),
+    ...(config.typescriptProject === undefined
+      ? {}
+      : { typescriptProject: configString(config.typescriptProject, "CLI config typescriptProject") }),
     ...(plugins === undefined ? {} : { plugins }),
   }) as CliConfig;
 };
@@ -409,7 +420,17 @@ const loadConfig = async (parsed: ParsedArguments, io: CliIo): Promise<ResolvedC
   const environmentColor = io.env.NO_COLOR !== undefined ? "never" : configuredEnvironmentColor;
   const format = parsed.format ?? environmentFormat ?? file.format ?? (io.stdoutIsTTY ? "pretty" : "jsonl");
   const color = parsed.color ?? environmentColor ?? file.color ?? "auto";
-  return Object.freeze({ format, color, plugins: file.plugins ?? Object.freeze([]) });
+  const typescriptProject = parsed.project === undefined
+    ? file.typescriptProject === undefined
+      ? undefined
+      : resolve(dirname(path), file.typescriptProject)
+    : resolve(io.cwd, parsed.project);
+  return Object.freeze({
+    format,
+    color,
+    plugins: file.plugins ?? Object.freeze([]),
+    ...(typescriptProject === undefined ? {} : { typescriptProject }),
+  });
 };
 
 const secret = /(?:password|passwd|secret|token|credential|api[-_]?key)/iu;
@@ -593,7 +614,9 @@ const createRuntime = async (config: ResolvedCliConfig, cwd: string) => {
   const filesystem = createFilesystemAdapter();
   const json = createJsonAdapter();
   const markdown = createMarkdownAdapter({ json });
-  const typescript = createTypeScriptAdapter();
+  const typescript = createTypeScriptAdapter(
+    config.typescriptProject === undefined ? {} : { project: config.typescriptProject },
+  );
   const markdownTreeView = treeViewArgument(markdown);
   const builtInAdapters: readonly Adapter[] = [filesystem, json, markdown, typescript];
   const plugins = await loadPlugins(config.plugins, cwd, builtInAdapters.map(({ namespace }) => namespace));
@@ -654,7 +677,10 @@ const createRuntime = async (config: ResolvedCliConfig, cwd: string) => {
       adapter: typescript,
       selectorSource: "roots",
       arguments: { uri: { type: "string", cardinality: "one", required: true } },
-      open: (args) => fromAdapter(typescript, { uri: args.uri as string }),
+      open: (args) => fromAdapter(typescript, {
+        uri: args.uri as string,
+        mode: typescript.mode,
+      }),
     },
   };
   const builtInMounts: NonNullable<DslEnvironment["mounts"]> = {
@@ -738,7 +764,7 @@ const createRuntime = async (config: ResolvedCliConfig, cwd: string) => {
     ...builtInAdapters.map((adapter) => [adapter.namespace, adapter.schema] as const),
     ...Object.entries(plugins.schemas),
   ]));
-  return { adapters, environment, plugins, schemas };
+  return { adapters, environment, plugins, schemas, typescript };
 };
 
 type CliInput =
@@ -852,7 +878,16 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
       const namespace = requested === undefined ? undefined : runtime.plugins.aliases.namespaces[requested] ?? requested;
       const schema = namespace === undefined ? undefined : runtime.schemas[namespace];
       if (schema === undefined) throw new TypeError(`Unknown adapter namespace ${JSON.stringify(requested)}.`);
-      io.stdout.write(`${JSON.stringify(serializable(schema), undefined, config.format === "pretty" ? 2 : undefined)}\n`);
+      const value = namespace === "ts"
+        ? {
+            ...schema,
+            runtime: {
+              mode: runtime.typescript.mode,
+              ...(runtime.typescript.project === undefined ? {} : { project: runtime.typescript.project }),
+            },
+          }
+        : schema;
+      io.stdout.write(`${JSON.stringify(serializable(value), undefined, config.format === "pretty" ? 2 : undefined)}\n`);
       return EXIT.success;
     }
     if (command === "plugins") {
@@ -861,6 +896,16 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
           .filter(({ plugin }) => plugin === undefined)
           .map((adapter) => {
             const compatibility = adapterCompatibility(adapter);
+            if (adapter.namespace === "ts") {
+              return {
+                contractVersion: compatibility.contractVersion,
+                namespace: compatibility.namespace,
+                schemaVersion: compatibility.schemaVersion,
+                builtIn: true,
+                mode: runtime.typescript.mode,
+                project: runtime.typescript.project,
+              };
+            }
             return {
               contractVersion: compatibility.contractVersion,
               namespace: compatibility.namespace,

@@ -14,6 +14,7 @@ import type { AdapterSchema } from "./schema.js";
 export interface SourceDescriptor {
   readonly uri: string;
   readonly treeView?: NamespacedName;
+  readonly mode?: string;
   readonly options?: Readonly<Record<string, Scalar | readonly Scalar[]>>;
 }
 

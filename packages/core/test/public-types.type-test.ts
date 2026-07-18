@@ -201,6 +201,10 @@ const markdownKind: "markdown::set-heading" | "markdown::replace-section" =
 void markdownKind;
 
 const typescript = createTypeScriptAdapter({ project: "tsconfig.json" });
+const typeScriptMode: "syntax-only" | "configured-project" = typescript.mode;
+void typeScriptMode;
+const typeScriptProject: string | undefined = typescript.project;
+void typeScriptProject;
 const mountedTypeScript = mountTypeScript(filesystemQuery, typescript);
 void mountedTypeScript;
 declare const typeScriptChange: TypeScriptChange;

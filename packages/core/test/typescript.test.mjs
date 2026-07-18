@@ -75,6 +75,7 @@ test("syntax-only mode remains queryable with diagnostics and call replacement",
     const [call] = await select(adapter, { uri: path }, 'ts::call[callee = "oldCall"]').toArray();
     assert(call);
     assert.equal((await Array.fromAsync(call.edges({ roles: ["reference"] }))).length, 0);
+    assert.equal(adapter.diagnostics().some(({ code }) => code === "ts.syntax-only"), true);
     assert.equal(adapter.diagnostics().some(({ code }) => code === "ts.syntax-error"), true);
     const plan = await planOperations([{ id: "call", adapter, operation: typeScriptReplaceCall(call.snapshot, "newCall") }]);
     await applyChangePlan(plan, [createTypeScriptAdapter()]);
