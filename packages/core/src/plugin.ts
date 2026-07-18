@@ -178,6 +178,7 @@ const fail = (code: string, message: string, cause?: unknown): never => {
 const semver = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
 const packageName = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u;
 const aliasName = /^[A-Za-z][A-Za-z0-9_-]*$/u;
+const reservedFunctionAliases = new Set(["related"]);
 const powers = new Set<PluginPower>([
   "resource:read", "resource:write", "filesystem:read", "filesystem:write",
   "network:read", "network:write", "process:execute", "credentials:read",
@@ -257,10 +258,12 @@ const resolveAliases = <T>(
   label: string,
   aliases: Readonly<Record<string, string>> | undefined,
   available: Readonly<Record<string, T>>,
+  reserved: ReadonlySet<string> = new Set(),
 ): Readonly<Record<string, string>> => {
   const result: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const [alias, target] of Object.entries(aliases ?? {})) {
     if (!aliasName.test(alias)) fail("plugin.invalid-alias", `Invalid ${label} alias ${JSON.stringify(alias)}.`);
+    if (reserved.has(alias)) fail("plugin.reserved-alias", `${label} alias ${JSON.stringify(alias)} is reserved by the host runtime.`);
     if (available[target] === undefined) fail("plugin.unknown-alias-target", `Unknown ${label} alias target ${JSON.stringify(target)}.`);
     result[alias] = target;
   }
@@ -432,7 +435,7 @@ export const registerPlugins = (
     mounts: resolveAliases("mount", policy.aliases?.mounts, mountRecord) as Readonly<Record<string, NamespacedName>>,
     operations: resolveAliases("operation", policy.aliases?.operations, operationRecord) as Readonly<Record<string, NamespacedName>>,
     predicates: resolveAliases("predicate", policy.aliases?.predicates, predicateRecord) as Readonly<Record<string, NamespacedName>>,
-    functions: resolveAliases("function", policy.aliases?.functions, functionRecord) as Readonly<Record<string, NamespacedName>>,
+    functions: resolveAliases("function", policy.aliases?.functions, functionRecord, reservedFunctionAliases) as Readonly<Record<string, NamespacedName>>,
     renderers: resolveAliases("renderer", policy.aliases?.renderers, rendererRecord) as Readonly<Record<string, NamespacedName>>,
     diffProviders: resolveAliases("diff provider", policy.aliases?.diffProviders, diffRecord) as Readonly<Record<string, NamespacedName>>,
   });

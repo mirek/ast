@@ -178,6 +178,10 @@ test("unknown, duplicate, incompatible, unauthorized, and unsafe plugins fail be
     () => registerPlugins([moduleFor()], policy({ aliases: { sources: { demo: "missing::source" } } })),
     (error) => error.code === "plugin.unknown-alias-target",
   );
+  assert.throws(
+    () => registerPlugins([moduleFor()], policy({ aliases: { functions: { related: "example::twice" } } })),
+    (error) => error.code === "plugin.reserved-alias",
+  );
   const unsafe = moduleFor();
   unsafe.contributions.optimizerRules[0] = {
     name: "example::identity-rule",

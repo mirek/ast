@@ -5,7 +5,8 @@ import { defineDiagnostic } from "./diagnostic.js";
 import type { Diagnostic } from "./diagnostic.js";
 import { immutableCopy } from "./immutable.js";
 import type { NamespacedName, Scalar, SourceRange } from "./model.js";
-import type { CaptureMap, NavigableNodeHandle, Query } from "./query.js";
+import { fromValues } from "./query.js";
+import type { CaptureMap, ExecuteOptions, NavigableNodeHandle, Query } from "./query.js";
 import type { AdapterSchema, Cardinality, ScalarType } from "./schema.js";
 import { SelectorError, selectFrom } from "./selector.js";
 import type { SelectorExtensionPredicate } from "./selector.js";
@@ -630,6 +631,113 @@ const expressionValue = (
   return literal(source, program, range);
 };
 
+interface ProjectionExpressionContext {
+  readonly program: DslProgram;
+  readonly range: SourceRange;
+  readonly selectorSchemas?: readonly AdapterSchema[];
+  readonly treeView?: NamespacedName;
+  readonly predicates?: Readonly<Record<string, SelectorExtensionPredicate>>;
+  readonly functions?: Readonly<Record<string, DslScalarFunction>>;
+}
+
+interface CompiledProjectionExpression {
+  readonly labels: readonly string[];
+  evaluate(
+    value: unknown,
+    captures: CaptureMap,
+    options: ExecuteOptions,
+  ): Promise<unknown>;
+}
+
+const compileProjectionExpression = (
+  expression: string,
+  context: ProjectionExpressionContext,
+): CompiledProjectionExpression => {
+  const source = expression.trim();
+  if (source.startsWith("{") && source.endsWith("}")) {
+    const fields = commaParts(source, 1, source.length - 1).map((entry) => {
+      const colon = entry.text.indexOf(":");
+      if (colon < 1) return fail(context.program, "dsl.invalid-record", "Expected `name: expression` in a projected record.", context.range);
+      const name = entry.text.slice(0, colon).trim();
+      if (!/^[A-Za-z][A-Za-z0-9_-]*$/u.test(name)) return fail(context.program, "dsl.invalid-record", `Invalid projected record field ${JSON.stringify(name)}.`, context.range);
+      return { name, compiled: compileProjectionExpression(entry.text.slice(colon + 1), context) };
+    });
+    const names = new Set<string>();
+    for (const { name } of fields) {
+      if (names.has(name)) return fail(context.program, "dsl.duplicate-field", `Duplicate projected record field ${JSON.stringify(name)}.`, context.range);
+      names.add(name);
+    }
+    return {
+      labels: Object.freeze(fields.flatMap(({ compiled }) => compiled.labels)),
+      async evaluate(value, captures, options) {
+        const result: Record<string, unknown> = {};
+        for (const field of fields) {
+          // Sequential evaluation preserves deterministic graph-read ordering.
+          // oxlint-disable-next-line no-await-in-loop
+          result[field.name] = await field.compiled.evaluate(value, captures, options);
+        }
+        return Object.freeze(result);
+      },
+    };
+  }
+
+  const related = /^related\s*\((.*)\)$/us.exec(source);
+  if (related !== null) {
+    const args = splitTopLevel(related[1] ?? "", 0, (related[1] ?? "").length, ",");
+    if (args.length !== 3) return fail(context.program, "dsl.related-arguments", "`related` requires a mode, selector, and projection expression.", context.range);
+    const mode = literal(args[0]?.text ?? "", context.program, context.range);
+    const selector = literal(args[1]?.text ?? "", context.program, context.range);
+    if (mode !== "one" && mode !== "many") return fail(context.program, "dsl.related-mode", "Related projection mode must be one or many.", context.range);
+    if (typeof selector !== "string") return fail(context.program, "dsl.related-selector", "Related projection requires a quoted selector.", context.range);
+    const selectorSchemas = context.selectorSchemas;
+    if (selectorSchemas === undefined) return fail(context.program, "dsl.related-after-derived", "Related projection requires an adapter-backed node query.", context.range);
+    const selectorOptions = {
+      ...(context.treeView === undefined ? {} : { treeView: context.treeView }),
+      ...(context.predicates === undefined ? {} : { predicates: context.predicates }),
+    };
+    try {
+      selectFrom(fromValues<NavigableNodeHandle>([]), selectorSchemas, selector, selectorOptions);
+    } catch (error) {
+      if (error instanceof SelectorError) throw selectorFailure(error, context.program, context.range.start);
+      throw error;
+    }
+    const projected = compileProjectionExpression(args[2]?.text ?? "", context);
+    return {
+      labels: Object.freeze([`related ${mode}`, ...projected.labels]),
+      async evaluate(value, captures, options) {
+        if (!isNode(value)) return fail(context.program, "dsl.related-node", "Related projection requires a graph node.", context.range);
+        const selected = selectFrom(fromValues([value]), selectorSchemas, selector, selectorOptions)
+          .project(async (relatedValue, relatedCaptures, relatedOptions) => {
+            const collisions = Object.keys(relatedCaptures).filter((name) => name in captures);
+            if (collisions.length > 0) return fail(context.program, "dsl.related-capture-collision", `Related selector capture $${collisions[0]} collides with an outer capture.`, context.range);
+            return projected.evaluate(
+              relatedValue,
+              Object.freeze({ ...captures, ...relatedCaptures }),
+              relatedOptions,
+            );
+          }, `related ${mode}`);
+        const values: unknown[] = [];
+        for await (const selectedValue of selected.iterate(options)) {
+          values.push(selectedValue);
+          if (mode === "one" && values.length > 1) {
+            return fail(context.program, "dsl.related-cardinality", "Related projection in one mode matched more than one node.", context.range);
+          }
+        }
+        return mode === "one" ? values[0] : Object.freeze(values);
+      },
+    };
+  }
+
+  const called = /^\s*([A-Za-z][A-Za-z0-9_-]*(?:::[A-Za-z][A-Za-z0-9_-]*)?)\(/u.exec(source)?.[1];
+  const canonical = called === undefined ? undefined : context.functions?.[called]?.name;
+  return {
+    labels: canonical === undefined ? Object.freeze([]) : Object.freeze([`plugin ${canonical}`]),
+    async evaluate(value, captures) {
+      return expressionValue(source, value, captures, context.program, context.range, context.functions);
+    },
+  };
+};
+
 const parseProjection = (step: DslStep, program: DslProgram): readonly { readonly name: string; readonly expression: string }[] => {
   const open = step.source.indexOf("{");
   const close = step.source.lastIndexOf("}");
@@ -834,15 +942,29 @@ const compilePipeline = (
     }
     if (step.kind === "project") {
       const fields = parseProjection(step, program);
-      const called = fields.flatMap(({ expression }) => {
-        const name = /^\s*([A-Za-z][A-Za-z0-9_-]*(?:::[A-Za-z][A-Za-z0-9_-]*)?)\(/u.exec(expression)?.[1];
-        const canonical = name === undefined ? undefined : environment.functions?.[name]?.name;
-        return canonical === undefined ? [] : [canonical];
-      });
+      const compiled = fields.map(({ name, expression }) => ({
+        name,
+        expression: compileProjectionExpression(expression, {
+          program,
+          range: step.range,
+          ...(state.selectorSchemas === undefined ? {} : { selectorSchemas: state.selectorSchemas }),
+          ...(state.treeView === undefined ? {} : { treeView: state.treeView }),
+          ...(environment.predicates === undefined ? {} : { predicates: environment.predicates }),
+          ...(environment.functions === undefined ? {} : { functions: environment.functions }),
+        }),
+      }));
       state = {
         query: state.query.project(
-          (value, captures) => Object.fromEntries(fields.map(({ name, expression }) => [name, expressionValue(expression, value, captures, program, step.range, environment.functions)])),
-          ["dsl project", ...called.map((name) => `plugin ${name}`)].join("; "),
+          async (value, captures, options) => {
+            const result: Record<string, unknown> = {};
+            for (const field of compiled) {
+              // Sequential evaluation preserves projection field ordering and graph reads.
+              // oxlint-disable-next-line no-await-in-loop
+              result[field.name] = await field.expression.evaluate(value, captures, options);
+            }
+            return result;
+          },
+          ["dsl project", ...compiled.flatMap(({ expression }) => expression.labels)].join("; "),
         ) as Query<unknown, CaptureMap>,
       };
       continue;

@@ -633,6 +633,12 @@ step        := "mount" name "(" argument-object? ")"
              | "plan"
 expression  := literal | "@" path | "$" name ("." path)?
              | (name | namespaced-name) "(" expression-list? ")"
+projection-expression := expression | "{" projection-list? "}"
+             | "related" "(" quoted-related-mode ","
+                 quoted-selector "," projection-expression ")"
+projection-list := name ":" projection-expression
+             ("," name ":" projection-expression)*
+quoted-related-mode := quoted string whose value is "one" or "many"
 argument-object := "{" argument-list? "}"
 argument-list   := name ":" argument-value ("," name ":" argument-value)*
 argument-value  := literal | "[" literal-list? "]"
@@ -662,6 +668,30 @@ derived value; `$capture.path` reads a selector capture; `$left` and `$right`
 address equality-join members. Bindings are lexical query values, cannot be
 recursive or effectful, and must precede their use. Joins are inner equality
 joins from the existing query algebra.
+
+Projection expressions additionally provide the host-reserved
+`related("one" | "many", selector, expression)` form. Its selector is compiled
+against the current ordered adapter-schema chain and runs relative to each
+current graph node. The nested expression reads the selected node through `@`
+and both outer and relative-selector captures through `$`; nested record
+expressions construct structured values without adapter-specific object
+access. `@origin` is the selected node's unchanged source provenance rather
+than a synthesized parent location. Relative captures are scoped to the nested
+expression and may not collide with an outer capture.
+
+`one` returns the projected value for exactly one match, the missing value for
+zero matches, and a source-located `dsl.related-cardinality` failure as soon as
+a second match is observed. It therefore never conflates missing with an
+explicit projected `null`. `many` returns an immutable array, including an
+empty array for zero matches, preserving selector traversal order and bag
+duplicates. Consequently duplicate property names must either be retained
+explicitly with `many` or rejected as ambiguous with `one`; there is no implicit
+last-value-wins object construction. Each outer row remains streaming. `one`
+reads at most two relative matches, while `many` buffers only that row's
+relative result array. The outer physical operator remains a non-global
+projection and labels each related mode in its explanation. Cancellation is
+passed into relative graph reads. Plugin function aliases cannot use the
+reserved name `related`.
 
 `invoke` must be followed immediately by terminal `plan`. Source, mount, and
 operation names are resolved only through an explicit compile environment.
@@ -858,7 +888,9 @@ const plan = await files
 
 The API SHOULD favor immutable query values, small composable operators, and
 schema-derived types. It MUST allow escape hatches for dynamically loaded
-schemas without making the common typed path cumbersome.
+schemas without making the common typed path cumbersome. Filter, projection,
+and flat-map callbacks receive the active execution options so nested lazy graph
+reads can propagate cancellation.
 
 Textual DSL compilation produces the same logical query objects used by this
 API. Neither interface receives privileged runtime behavior.
@@ -1260,8 +1292,12 @@ from fs({ uri: ".", include: ["**/package.json"], kinds: ["fs::file"] })
 | select 'fs::file[name = "package.json"] > json::root'
 | project {
     file: @origin.uri,
-    name: child("name").value,
-    dependencies: child("dependencies")
+    name: related("one", 'json::property[name = "name"] > json::scalar', @value),
+    dependencies: related(
+      "many",
+      'json::property[name = "dependencies"] > json::object > json::property as $dependency > json::scalar',
+      { name: $dependency.name, version: @value }
+    )
   }
 ```
 
