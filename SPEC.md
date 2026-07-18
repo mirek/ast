@@ -812,6 +812,14 @@ standard input programs use the stable non-file URIs `argv:program` and
 `stdin:program`. Ambiguous input combinations are usage failures, and
 cancellation interrupts a pending standard-input read.
 
+Arguments are command-specific. `--save` belongs only to `plan`; `--yes` and
+the risk acknowledgements belong only to `apply`; `schema` requires exactly one
+namespace; and `plugins` accepts no positional argument. Unknown, duplicate,
+missing-value, irrelevant, and extra arguments fail before configuration,
+plugin loading, or program execution. `ast --help`, `ast help`, and
+`ast <command> --help` write useful help to stdout and exit 0. `ast --version`
+and `ast -V` report the `@mirek/ast-cli` package version and exit 0.
+
 The executable and product name is `ast`; the package remains
 `@mirek/ast-cli` while private.
 
@@ -828,8 +836,20 @@ Default behavior:
 Non-terminal query output is stable JSON Lines: data uses stdout and diagnostics
 use stderr. Terminals default to indented readable output, while plan previews
 use risk labels and redacted text diffs. `--format` overrides `AST_FORMAT`, which
-overrides `.astrc.json`, then terminal-sensitive defaults. `NO_COLOR` overrides
-color configuration; the initial renderer emits no ANSI color.
+overrides `.astrc.json`, then terminal-sensitive defaults. `--color` overrides
+`NO_COLOR`, then `AST_COLOR`, then `.astrc.json`. The initial renderer emits no
+ANSI color.
+
+CLI configuration is a closed object with optional `format`, `color`, and
+`plugins` fields. Formats are `jsonl` or `pretty`; color policies are `auto`,
+`always`, or `never`. Plugin entries require non-empty `specifier` and `name`
+strings and may contain only supported powers and the documented alias
+categories. Configuration objects, plugin entries, powers, and nested aliases
+are defensively copied and immutable after validation. Malformed JSON, missing
+explicit config files, unknown fields, duplicate plugin identities or aliases,
+invalid enum values, and invalid `AST_FORMAT` or `AST_COLOR` values fail before
+plugin code is imported. Invalid lower-precedence sources are not silently
+ignored merely because a higher-precedence setting is present.
 
 `plan` only previews and optionally saves. Non-interactive apply never prompts
 and requires `--yes`, plus `--allow-destructive` or `--allow-irreversible` for
@@ -842,7 +862,8 @@ error, 3 invalid plan, 4 missing confirmation/policy acknowledgement, 5 apply
 failure, and 130 cancellation. Query warnings may accompany successful data;
 errors retain streamed output but return 2. Rendered values redact conventional
 secret/key fields. Explicit saved-plan files contain adapter-private payloads
-and MUST be handled as sensitive artifacts.
+and MUST be handled as sensitive artifacts. Usage failures emit `cli.usage`;
+configuration failures emit `cli.invalid-config`.
 
 Saved plans MUST include enough adapter version, schema version, resource
 identity, and revision information to reject unsafe replay.

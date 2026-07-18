@@ -1,4 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -71,6 +72,8 @@ export const EXIT = Object.freeze({
 interface ParsedArguments {
   readonly command: string;
   readonly positional: readonly string[];
+  readonly options: readonly string[];
+  readonly help: boolean;
   readonly file?: string;
   readonly expression?: string;
   readonly stdin: boolean;
@@ -103,19 +106,71 @@ interface ResolvedCliConfig {
 }
 
 class CliUsageError extends TypeError {
+  readonly code = "cli.usage";
   override readonly name = "CliUsageError";
 }
+
+class CliConfigError extends TypeError {
+  readonly code = "cli.invalid-config";
+  override readonly name = "CliConfigError";
+}
+
+const version = (createRequire(import.meta.url)("../package.json") as { readonly version: string }).version;
+const commands = ["query", "plan", "apply", "explain", "schema", "plugins"] as const;
+type CliCommand = typeof commands[number];
 
 const usage = [
   "Usage: ast <query|plan|apply|explain> (--file <path> | --expr <program> | --stdin) [options]",
   "       ast <query|plan|apply|explain> <file-path|-> [options]",
-  "       ast <schema|plugins> [name] [options]",
+  "       ast schema <namespace> [options]",
+  "       ast plugins [options]",
   "",
+  "Commands:",
+  "  query     Stream query results.",
+  "  plan      Preview a transformation plan.",
+  "  apply     Apply a transformation or saved plan.",
+  "  explain   Explain a query or transformation.",
+  "  schema    Print one adapter schema.",
+  "  plugins   Print the admitted adapter inventory.",
+  "",
+  "Global options:",
+  "  --format <jsonl|pretty>   Select output formatting.",
+  "  --color <auto|always|never> Select color policy.",
+  "  --config <path>          Read configuration from a specific file.",
+  "  -h, --help               Show help.",
+  "  -V, --version            Show the CLI version.",
+  "",
+  "Run ast <command> --help for command-specific options.",
 ].join("\n");
+
+const inputHelp = [
+  "  --file <path>            Read input from a file.",
+  "  --expr <program>         Read an inline DSL program.",
+  "  --stdin                  Read input from standard input.",
+];
+const commonHelp = [
+  "  --format <jsonl|pretty>  Select output formatting.",
+  "  --color <auto|always|never> Select color policy.",
+  "  --config <path>          Read configuration from a specific file.",
+  "  -h, --help               Show this help.",
+];
+const commandHelp: Readonly<Record<CliCommand, string>> = Object.freeze({
+  query: ["Usage: ast query <input> [options]", "", "Input options:", ...inputHelp, "", "Options:", ...commonHelp, ""].join("\n"),
+  plan: ["Usage: ast plan <input> [--save <path>] [options]", "", "Input options:", ...inputHelp, "", "Options:", "  --save <path>            Save the plan envelope.", ...commonHelp, ""].join("\n"),
+  apply: ["Usage: ast apply <input> --yes [risk acknowledgements] [options]", "", "Input options:", ...inputHelp, "", "Options:", "  --yes                    Confirm non-interactive application.", "  --allow-destructive      Acknowledge destructive changes.", "  --allow-irreversible     Acknowledge irreversible changes.", ...commonHelp, ""].join("\n"),
+  explain: ["Usage: ast explain <input> [options]", "", "Input options:", ...inputHelp, "", "Options:", ...commonHelp, ""].join("\n"),
+  schema: ["Usage: ast schema <namespace> [options]", "", "Options:", ...commonHelp, ""].join("\n"),
+  plugins: ["Usage: ast plugins [options]", "", "Options:", ...commonHelp, ""].join("\n"),
+});
+
+const isCommand = (value: string): value is CliCommand => (commands as readonly string[]).includes(value);
 
 const parseArguments = (args: readonly string[]): ParsedArguments => {
   const command = args[0] ?? "";
   const positional: string[] = [];
+  const options: string[] = [];
+  const seen = new Set<string>();
+  let help = false;
   let format: ParsedArguments["format"];
   let color: ParsedArguments["color"];
   let config: string | undefined;
@@ -126,40 +181,47 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
   let yes = false;
   let allowDestructive = false;
   let allowIrreversible = false;
+  const use = (option: string): void => {
+    if (seen.has(option)) throw new CliUsageError(`${option} may be specified only once.`);
+    seen.add(option);
+    options.push(option);
+  };
   for (let index = 1; index < args.length; index += 1) {
     const value = args[index] ?? "";
-    if (value === "--yes") yes = true;
+    if (value === "--help" || value === "-h") {
+      use("--help");
+      help = true;
+    }
+    else if (value === "--yes") { use(value); yes = true; }
     else if (value === "--stdin") {
-      if (stdin) throw new CliUsageError("--stdin may be specified only once.");
+      use(value);
       stdin = true;
     }
-    else if (value === "--allow-destructive") allowDestructive = true;
-    else if (value === "--allow-irreversible") allowIrreversible = true;
+    else if (value === "--allow-destructive") { use(value); allowDestructive = true; }
+    else if (value === "--allow-irreversible") { use(value); allowIrreversible = true; }
     else if (["--format", "--color", "--config", "--save", "--file", "--expr"].includes(value)) {
       const next = args[index + 1];
-      if (next === undefined) throw new TypeError(`${value} requires a value.`);
+      if (next === undefined || (next.startsWith("-") && next !== "-")) throw new CliUsageError(`${value} requires a value.`);
+      use(value);
       index += 1;
       if (value === "--format") {
-        if (next !== "jsonl" && next !== "pretty") throw new TypeError("Format must be jsonl or pretty.");
+        if (next !== "jsonl" && next !== "pretty") throw new CliUsageError("Format must be jsonl or pretty.");
         format = next;
       } else if (value === "--color") {
-        if (next !== "auto" && next !== "always" && next !== "never") throw new TypeError("Color must be auto, always, or never.");
+        if (next !== "auto" && next !== "always" && next !== "never") throw new CliUsageError("Color must be auto, always, or never.");
         color = next;
       } else if (value === "--config") config = next;
       else if (value === "--save") save = next;
-      else if (value === "--file") {
-        if (file !== undefined) throw new CliUsageError("--file may be specified only once.");
-        file = next;
-      } else {
-        if (expression !== undefined) throw new CliUsageError("--expr may be specified only once.");
-        expression = next;
-      }
-    } else if (value.startsWith("--")) throw new TypeError(`Unknown option ${value}.`);
+      else if (value === "--file") file = next;
+      else expression = next;
+    } else if (value.startsWith("-") && value !== "-") throw new CliUsageError(`Unknown option ${value}.`);
     else positional.push(value);
   }
   return {
     command,
-    positional,
+    positional: Object.freeze(positional),
+    options: Object.freeze(options),
+    help,
     ...(file === undefined ? {} : { file }),
     ...(expression === undefined ? {} : { expression }),
     stdin,
@@ -173,20 +235,164 @@ const parseArguments = (args: readonly string[]): ParsedArguments => {
   };
 };
 
+const commonOptions = ["--format", "--color", "--config", "--help"] as const;
+const inputOptions = ["--file", "--expr", "--stdin"] as const;
+const allowedOptions: Readonly<Record<CliCommand, readonly string[]>> = Object.freeze({
+  query: [...commonOptions, ...inputOptions],
+  plan: [...commonOptions, ...inputOptions, "--save"],
+  apply: [...commonOptions, ...inputOptions, "--yes", "--allow-destructive", "--allow-irreversible"],
+  explain: [...commonOptions, ...inputOptions],
+  schema: commonOptions,
+  plugins: commonOptions,
+});
+
+const validateArguments = (parsed: ParsedArguments): CliCommand => {
+  if (!isCommand(parsed.command)) throw new CliUsageError(`Unknown command ${JSON.stringify(parsed.command)}.`);
+  const command = parsed.command;
+  for (const option of parsed.options) {
+    if (!allowedOptions[command].includes(option)) throw new CliUsageError(`${option} is not valid for ast ${command}.`);
+  }
+  if (parsed.help) return command;
+  if (["query", "plan", "apply", "explain"].includes(command)) {
+    if (parsed.positional.length > 1) throw new CliUsageError(`${command} accepts at most one positional file path.`);
+    const inputCount = Number(parsed.file !== undefined)
+      + Number(parsed.expression !== undefined)
+      + Number(parsed.stdin)
+      + parsed.positional.length;
+    if (inputCount !== 1) throw new CliUsageError(`${command} requires exactly one input mode.`);
+  } else if (command === "schema" && parsed.positional.length !== 1) {
+    throw new CliUsageError("schema requires exactly one namespace.");
+  } else if (command === "plugins" && parsed.positional.length !== 0) {
+    throw new CliUsageError("plugins does not accept positional arguments.");
+  }
+  return command;
+};
+
+const aliasCategories = ["namespaces", "sources", "mounts", "operations", "predicates", "functions", "renderers", "diffProviders"] as const;
+const pluginPowers = new Set<PluginPower>([
+  "resource:read", "resource:write", "filesystem:read", "filesystem:write",
+  "network:read", "network:write", "process:execute", "credentials:read",
+  "native-modules:load",
+]);
+
+const configRecord = (value: unknown, label: string): Readonly<Record<string, unknown>> => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new CliConfigError(`${label} must be an object.`);
+  }
+  return value as Readonly<Record<string, unknown>>;
+};
+
+const validateKeys = (value: Readonly<Record<string, unknown>>, allowed: readonly string[], label: string): void => {
+  const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (unknown.length > 0) throw new CliConfigError(`${label} contains unknown field ${JSON.stringify(unknown[0])}.`);
+};
+
+const configString = (value: unknown, label: string): string => {
+  if (typeof value !== "string" || value.length === 0) throw new CliConfigError(`${label} must be a non-empty string.`);
+  return value;
+};
+
+const validateAliases = (value: unknown, label: string): PluginAliases => {
+  const aliases = configRecord(value, label);
+  validateKeys(aliases, aliasCategories, label);
+  const result: Record<string, Readonly<Record<string, string>>> = Object.create(null) as Record<string, Readonly<Record<string, string>>>;
+  for (const category of aliasCategories) {
+    if (aliases[category] === undefined) continue;
+    const configured = configRecord(aliases[category], `${label}.${category}`);
+    const entries: Record<string, string> = Object.create(null) as Record<string, string>;
+    for (const [alias, target] of Object.entries(configured)) {
+      if (alias.length === 0) throw new CliConfigError(`${label}.${category} contains an empty alias.`);
+      entries[alias] = configString(target, `${label}.${category}.${alias}`);
+    }
+    result[category] = Object.freeze(entries);
+  }
+  return Object.freeze(result) as PluginAliases;
+};
+
+const validatePluginConfig = (value: unknown, index: number): CliPluginConfig => {
+  const label = `CLI config plugins[${index}]`;
+  const plugin = configRecord(value, label);
+  validateKeys(plugin, ["specifier", "name", "powers", "aliases"], label);
+  const specifier = configString(plugin.specifier, `${label}.specifier`);
+  const name = configString(plugin.name, `${label}.name`);
+  let powers: readonly PluginPower[] | undefined;
+  if (plugin.powers !== undefined) {
+    if (!Array.isArray(plugin.powers)) throw new CliConfigError(`${label}.powers must be an array.`);
+    const validated: PluginPower[] = [];
+    for (const [powerIndex, power] of plugin.powers.entries()) {
+      if (typeof power !== "string" || !pluginPowers.has(power as PluginPower)) {
+        throw new CliConfigError(`${label}.powers[${powerIndex}] is not a supported plugin power.`);
+      }
+      if (validated.includes(power as PluginPower)) throw new CliConfigError(`${label}.powers contains duplicate ${JSON.stringify(power)}.`);
+      validated.push(power as PluginPower);
+    }
+    powers = Object.freeze(validated);
+  }
+  const aliases = plugin.aliases === undefined ? undefined : validateAliases(plugin.aliases, `${label}.aliases`);
+  return Object.freeze({
+    specifier,
+    name,
+    ...(powers === undefined ? {} : { powers }),
+    ...(aliases === undefined ? {} : { aliases }),
+  });
+};
+
+const validateCliConfig = (value: unknown): CliConfig => {
+  const config = configRecord(value, "CLI config");
+  validateKeys(config, ["format", "color", "plugins"], "CLI config");
+  if (config.format !== undefined && config.format !== "jsonl" && config.format !== "pretty") {
+    throw new CliConfigError("CLI config format must be jsonl or pretty.");
+  }
+  if (config.color !== undefined && config.color !== "auto" && config.color !== "always" && config.color !== "never") {
+    throw new CliConfigError("CLI config color must be auto, always, or never.");
+  }
+  let plugins: readonly CliPluginConfig[] | undefined;
+  if (config.plugins !== undefined) {
+    if (!Array.isArray(config.plugins)) throw new CliConfigError("CLI config plugins must be an array.");
+    plugins = Object.freeze(config.plugins.map(validatePluginConfig));
+    const names = new Set<string>();
+    const specifiers = new Set<string>();
+    const aliases = Object.fromEntries(aliasCategories.map((category) => [category, new Set<string>()])) as Record<typeof aliasCategories[number], Set<string>>;
+    for (const plugin of plugins) {
+      if (names.has(plugin.name)) throw new CliConfigError(`CLI config contains duplicate plugin name ${JSON.stringify(plugin.name)}.`);
+      if (specifiers.has(plugin.specifier)) throw new CliConfigError(`CLI config contains duplicate plugin specifier ${JSON.stringify(plugin.specifier)}.`);
+      names.add(plugin.name);
+      specifiers.add(plugin.specifier);
+      for (const category of aliasCategories) for (const alias of Object.keys(plugin.aliases?.[category] ?? {})) {
+        if (aliases[category].has(alias)) throw new CliConfigError(`CLI config contains duplicate ${category} alias ${JSON.stringify(alias)}.`);
+        aliases[category].add(alias);
+      }
+    }
+  }
+  return Object.freeze({
+    ...(config.format === undefined ? {} : { format: config.format }),
+    ...(config.color === undefined ? {} : { color: config.color }),
+    ...(plugins === undefined ? {} : { plugins }),
+  }) as CliConfig;
+};
+
 const loadConfig = async (parsed: ParsedArguments, io: CliIo): Promise<ResolvedCliConfig> => {
   const path = resolve(io.cwd, parsed.config ?? ".astrc.json");
-  let file: CliConfig = {};
+  let raw: unknown = {};
   try {
-    file = JSON.parse(await readFile(path, "utf8")) as CliConfig;
+    raw = JSON.parse(await readFile(path, "utf8")) as unknown;
   } catch (error) {
-    if (parsed.config !== undefined || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if (parsed.config === undefined && (error as NodeJS.ErrnoException).code === "ENOENT") raw = {};
+    else throw new CliConfigError(`Could not load CLI config ${JSON.stringify(path)}.`);
   }
+  const file = validateCliConfig(raw);
   const environmentFormat = io.env.AST_FORMAT;
-  const environmentColor = io.env.NO_COLOR !== undefined ? "never" : io.env.AST_COLOR;
-  const format = parsed.format ?? (environmentFormat === "jsonl" || environmentFormat === "pretty" ? environmentFormat : undefined) ?? file.format ?? (io.stdoutIsTTY ? "pretty" : "jsonl");
-  const color = parsed.color ?? (environmentColor === "auto" || environmentColor === "always" || environmentColor === "never" ? environmentColor : undefined) ?? file.color ?? "auto";
-  if (file.plugins !== undefined && !Array.isArray(file.plugins)) throw new TypeError("CLI plugins configuration must be an array.");
-  return { format, color, plugins: file.plugins ?? [] };
+  if (environmentFormat !== undefined && environmentFormat !== "jsonl" && environmentFormat !== "pretty") {
+    throw new CliConfigError("AST_FORMAT must be jsonl or pretty.");
+  }
+  const configuredEnvironmentColor = io.env.AST_COLOR;
+  if (configuredEnvironmentColor !== undefined && configuredEnvironmentColor !== "auto" && configuredEnvironmentColor !== "always" && configuredEnvironmentColor !== "never") {
+    throw new CliConfigError("AST_COLOR must be auto, always, or never.");
+  }
+  const environmentColor = io.env.NO_COLOR !== undefined ? "never" : configuredEnvironmentColor;
+  const format = parsed.format ?? environmentFormat ?? file.format ?? (io.stdoutIsTTY ? "pretty" : "jsonl");
+  const color = parsed.color ?? environmentColor ?? file.color ?? "auto";
+  return Object.freeze({ format, color, plugins: file.plugins ?? Object.freeze([]) });
 };
 
 const secret = /(?:password|passwd|secret|token|credential|api[-_]?key)/iu;
@@ -458,11 +664,26 @@ const diagnosticsOf = (adapters: readonly Adapter[]): readonly Diagnostic[] => a
 
 export const runCli = async (args: readonly string[], io: CliIo): Promise<number> => {
   try {
-    const parsed = parseArguments(args);
-    if (!["query", "plan", "apply", "explain", "schema", "plugins"].includes(parsed.command)) { io.stderr.write(usage); return EXIT.usage; }
+    if (args.length === 1 && (args[0] === "--help" || args[0] === "-h" || args[0] === "help")) {
+      io.stdout.write(`${usage}\n`);
+      return EXIT.success;
+    }
+    if (args.length === 1 && (args[0] === "--version" || args[0] === "-V")) {
+      io.stdout.write(`ast ${version}\n`);
+      return EXIT.success;
+    }
+    const normalizedArgs = args[0] === "help" && args.length === 2
+      ? [args[1] ?? "", "--help"]
+      : args;
+    const parsed = parseArguments(normalizedArgs);
+    const command = validateArguments(parsed);
+    if (parsed.help) {
+      io.stdout.write(commandHelp[command]);
+      return EXIT.success;
+    }
     const config = await loadConfig(parsed, io);
     const runtime = await createRuntime(config, io.cwd);
-    if (parsed.command === "schema") {
+    if (command === "schema") {
       const requested = parsed.positional[0];
       const namespace = requested === undefined ? undefined : runtime.plugins.aliases.namespaces[requested] ?? requested;
       const schema = namespace === undefined ? undefined : runtime.schemas[namespace];
@@ -470,7 +691,7 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
       io.stdout.write(`${JSON.stringify(serializable(schema), undefined, config.format === "pretty" ? 2 : undefined)}\n`);
       return EXIT.success;
     }
-    if (parsed.command === "plugins") {
+    if (command === "plugins") {
       const values = runtime.adapters.map((adapter) => adapter.plugin === undefined
         ? { ...adapterCompatibility(adapter), builtIn: true }
         : { ...adapterCompatibility(adapter), builtIn: false, plugin: adapter.plugin, trustedCode: true, isolated: false });
@@ -480,7 +701,7 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
     const input = resolveInput(parsed, io.cwd);
     const text = await readInput(input, io);
     let savedPlan: ChangePlan | undefined;
-    if (parsed.command === "apply") {
+    if (command === "apply") {
       let envelope = false;
       try {
         const parsedInput = JSON.parse(text) as { readonly integrity?: unknown; readonly plan?: unknown };
@@ -498,7 +719,7 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
     const compiled = savedPlan === undefined
       ? compileDsl(text, runtime.environment, { uri: input.uri })
       : undefined;
-    if (parsed.command === "query") {
+    if (command === "query") {
       if (compiled?.kind !== "query") throw new TypeError("query requires a query program.");
       for await (const value of compiled.query.iterate(io.signal === undefined ? {} : { signal: io.signal })) emit(io, config.format, value);
       const diagnostics = diagnosticsOf(runtime.adapters);
@@ -507,7 +728,7 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
         ? EXIT.diagnostic
         : EXIT.success;
     }
-    if (parsed.command === "explain") {
+    if (command === "explain") {
       if (compiled?.kind === "query") io.stdout.write(`${JSON.stringify(serializable(compiled.query.explain()), undefined, 2)}\n`);
       else if (compiled?.kind === "plan") {
         const plan = await compiled.plan();
@@ -517,14 +738,14 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
     }
     let plan = savedPlan;
     if (plan === undefined) {
-      if (compiled?.kind !== "plan") throw new TypeError(`${parsed.command} requires a transformation program or saved plan.`);
+      if (compiled?.kind !== "plan") throw new TypeError(`${command} requires a transformation program or saved plan.`);
       plan = await compiled.plan();
     }
     if (plan.diagnostics.some(({ severity }) => severity === "error")) {
       for (const diagnostic of plan.diagnostics) emitDiagnostic(io, diagnostic);
       return EXIT.invalidPlan;
     }
-    if (parsed.command === "plan") {
+    if (command === "plan") {
       io.stdout.write(renderChangePlan(plan));
       if (parsed.save !== undefined) await writeFile(resolve(io.cwd, parsed.save), serializeChangePlan(plan), "utf8");
       return EXIT.success;
@@ -541,8 +762,8 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
     return result.groups.some(({ status }) => status === "failed") ? EXIT.apply : EXIT.success;
   } catch (error) {
     if (io.signal?.aborted === true || (error instanceof Error && error.name === "AbortError")) return EXIT.cancelled;
-    if (error instanceof CliUsageError) {
-      io.stderr.write(`${error.message}\n${usage}`);
+    if (error instanceof CliUsageError || error instanceof CliConfigError) {
+      io.stderr.write(line({ type: "diagnostic", value: { code: error.code, severity: "error", message: error.message } }));
       return EXIT.usage;
     }
     if (error instanceof DslError) for (const value of error.diagnostics) emitDiagnostic(io, value);

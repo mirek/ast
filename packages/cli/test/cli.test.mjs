@@ -238,6 +238,107 @@ test("configuration precedence and usage exit codes are deterministic", async ()
     assert.equal(usage.code, 1);
   }));
 
+test("global and command help plus version are successful public surfaces", async () => {
+  const cases = [
+    { args: ["--help"], expected: /Commands:/ },
+    { args: ["help"], expected: /Commands:/ },
+    { args: ["help", "query"], expected: /Usage: ast query/ },
+    ...["query", "plan", "apply", "explain", "schema", "plugins"].map((command) => ({
+      args: [command, "--help"],
+      expected: new RegExp(`Usage: ast ${command}`),
+    })),
+  ];
+  const results = await Promise.all(cases.map(async ({ args, expected }) => {
+    const result = await run(args);
+    assert.equal(result.code, 0, args.join(" "));
+    assert.equal(result.stderr, "", args.join(" "));
+    assert.match(result.stdout, expected, args.join(" "));
+  }));
+  assert.equal(results.length, cases.length);
+
+  await Promise.all([["--version"], ["-V"]].map(async (args) => {
+    const result = await run(args);
+    assert.equal(result.code, 0);
+    assert.equal(result.stderr, "");
+    assert.equal(result.stdout, "ast 0.0.0\n");
+  }));
+});
+
+test("command shapes and option values fail with stable usage diagnostics", async () => {
+  const cases = [
+    [],
+    ["unknown"],
+    ["query"],
+    ["query", "--expr"],
+    ["query", "--expr", "from fs()", "--save", "plan.json"],
+    ["query", "--expr", "from fs()", "--yes"],
+    ["plan", "--expr", "from fs()", "--allow-destructive"],
+    ["apply", "--expr", "from fs()", "--save", "plan.json"],
+    ["explain", "--expr", "from fs()", "--yes"],
+    ["schema"],
+    ["schema", "json", "ts"],
+    ["schema", "json", "--stdin"],
+    ["plugins", "json"],
+    ["plugins", "--file", "query.dsl"],
+    ["plugins", "--format"],
+    ["plugins", "--format", "yaml"],
+    ["plugins", "--color"],
+    ["plugins", "--color", "rainbow"],
+    ["plugins", "--config"],
+    ["plan", "--expr", "from fs()", "--save"],
+    ["query", "-x"],
+    ["query", "--unknown"],
+    ["apply", "--expr", "from fs()", "--yes", "--yes"],
+  ];
+  await Promise.all(cases.map(async (args) => {
+    const result = await run(args);
+    assert.equal(result.code, 1, args.join(" "));
+    assert.equal(JSON.parse(result.stderr).value.code, "cli.usage", args.join(" "));
+  }));
+});
+
+test("configuration sources are completely validated before use", async () =>
+  fixture(async (root) => {
+    const invalid = [
+      null,
+      [],
+      { extra: true },
+      { format: "yaml" },
+      { color: "rainbow" },
+      { plugins: {} },
+      { plugins: [null] },
+      { plugins: [{}] },
+      { plugins: [{ specifier: "./plugin.mjs", name: "demo", powers: ["unknown"] }] },
+      { plugins: [{ specifier: "./plugin.mjs", name: "demo", aliases: { sources: [] } }] },
+      { plugins: [{ specifier: "./plugin.mjs", name: "demo", aliases: { unknown: {} } }] },
+      { plugins: [{ specifier: "./one.mjs", name: "demo" }, { specifier: "./two.mjs", name: "demo" }] },
+      { plugins: [
+        { specifier: "./one.mjs", name: "one", aliases: { sources: { demo: "one::source" } } },
+        { specifier: "./two.mjs", name: "two", aliases: { sources: { demo: "two::source" } } },
+      ] },
+    ];
+    const paths = await Promise.all(invalid.map(async (value, index) => {
+      const path = join(root, `invalid-${index}.json`);
+      await writeFile(path, JSON.stringify(value));
+      return path;
+    }));
+    const failures = await Promise.all([
+      ...paths.map((path) => run(["plugins", "--config", path], { cwd: root })),
+      run(["plugins", "--config", join(root, "missing.json")], { cwd: root }),
+      run(["plugins"], { cwd: root, env: { AST_FORMAT: "yaml" } }),
+      run(["plugins"], { cwd: root, env: { AST_COLOR: "rainbow" } }),
+    ]);
+    for (const failure of failures) {
+      assert.equal(failure.code, 1);
+      assert.equal(JSON.parse(failure.stderr).value.code, "cli.invalid-config");
+    }
+
+    await writeFile(join(root, ".astrc.json"), "not json");
+    const malformed = await run(["plugins"], { cwd: root });
+    assert.equal(malformed.code, 1);
+    assert.equal(JSON.parse(malformed.stderr).value.code, "cli.invalid-config");
+  }));
+
 test("explicitly allowlisted plugins load as trusted code and enforce powers before use", async () =>
   fixture(async (root) => {
     const plugin = join(root, "plugin.mjs");
