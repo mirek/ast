@@ -692,7 +692,11 @@ export const fromAdapter = (
     operatorNode(
       "source",
       ordering,
-      { label: adapter.namespace, uri: source.uri },
+      {
+        label: adapter.namespace,
+        uri: source.uri,
+        ...(source.treeView === undefined ? {} : { treeView: source.treeView }),
+      },
       false,
       [],
       new Set(),

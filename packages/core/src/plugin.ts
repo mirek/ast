@@ -49,6 +49,7 @@ export interface PluginResolverContribution {
   readonly adapter: Adapter;
   readonly selectorSource: SelectorSourceMode;
   readonly arguments: DslArgumentSchema;
+  treeView?(args: DslArguments): NamespacedName | undefined;
   open(args: DslArguments): Query<NavigableNodeHandle>;
 }
 
@@ -56,6 +57,7 @@ export interface PluginMountContribution {
   readonly name: NamespacedName;
   readonly adapter: Adapter;
   readonly arguments: DslArgumentSchema;
+  treeView?(args: DslArguments): NamespacedName | undefined;
   mount(
     query: Query<NavigableNodeHandle, CaptureMap>,
     args: DslArguments,

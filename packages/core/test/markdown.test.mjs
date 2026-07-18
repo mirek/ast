@@ -9,6 +9,7 @@ import {
   createFilesystemAdapter,
   createJsonAdapter,
   createMarkdownAdapter,
+  fromMarkdown,
   fromFilesystem,
   markdownReplaceSection,
   markdownSetHeading,
@@ -62,7 +63,7 @@ test("Markdown syntax and semantic section trees share source provenance", async
 
     const syntax = await select(
       markdown,
-      { uri: path, options: { treeView: "markdown::syntax-tree" } },
+      { uri: path, treeView: "markdown::syntax-tree" },
       "markdown::document markdown::link",
       { treeView: "markdown::syntax-tree" },
     ).toArray();
@@ -73,7 +74,7 @@ test("Markdown syntax and semantic section trees share source provenance", async
 
     const semantic = await select(
       markdown,
-      { uri: path, options: { treeView: "markdown::section-tree" } },
+      { uri: path, treeView: "markdown::section-tree" },
       "markdown::document > markdown::section[level = 1] > markdown::section[level = 3]",
       { treeView: "markdown::section-tree" },
     ).toArray();
@@ -102,6 +103,10 @@ test("Markdown syntax and semantic section trees share source provenance", async
     );
     assert.equal(duplicateHeadings.length, 2);
     assert.notEqual(duplicateHeadings[0]?.snapshot.id.local, duplicateHeadings[1]?.snapshot.id.local);
+    await assert.rejects(
+      fromMarkdown(markdown, { uri: path, treeView: "markdown::missing" }).toArray(),
+      /Unknown Markdown tree view/,
+    );
     assert.equal(
       all.some(
         ({ snapshot }) =>
@@ -182,7 +187,7 @@ test("Markdown semantic edits preserve unrelated bytes and apply atomically", as
     ).toArray();
     const [section] = await select(
       markdown,
-      { uri: path, options: { treeView: "markdown::section-tree" } },
+      { uri: path, treeView: "markdown::section-tree" },
       'markdown::section[title = "Old"]',
       { treeView: "markdown::section-tree" },
     ).toArray();

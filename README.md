@@ -188,19 +188,34 @@ const sections = select(
   markdown,
   {
     uri: "README.md",
-    options: { treeView: "markdown::section-tree" },
+    treeView: "markdown::section-tree",
   },
   "markdown::document > markdown::section[level <= 2]",
   { treeView: "markdown::section-tree" },
 );
 ```
 
-`mountMarkdown` adds documents lazily beneath filesystem files. JSON fenced
-blocks can mount through the supplied JSON adapter without losing the path back
-to their code block and original file; embedded JSON is read-only, so edits are
-owned by Markdown. `markdownSetHeading` and `markdownReplaceSection` emit
-revision-guarded localized patches that compose in the explicit change-plan
-runtime.
+Textual queries expose the same choice on both the direct source and the mount:
+
+```text
+from markdown({ uri: "README.md", treeView: "markdown::section-tree" })
+| select 'markdown::document > markdown::section'
+
+from fs({ uri: ".", include: ["README.md"], kinds: ["fs::file"] })
+| mount markdown({ treeView: "markdown::section-tree" })
+| select 'fs::file > markdown::document > markdown::section'
+```
+
+The default is `markdown::syntax-tree`. The selected view remains active for
+later selector steps, including their captures, and appears in explanations.
+Unknown or non-Markdown view names are source-located DSL diagnostics.
+
+`mountMarkdown` accepts the same `treeView` option and adds documents lazily
+beneath filesystem files. JSON fenced blocks can mount through the supplied
+JSON adapter without losing the path back to their code block and original
+file; embedded JSON is read-only, so edits are owned by Markdown.
+`markdownSetHeading` and `markdownReplaceSection` emit revision-guarded
+localized patches that compose in the explicit change-plan runtime.
 
 The initial parser handles YAML-delimited frontmatter, ATX headings, paragraphs,
 flat lists, inline and reference links, fenced code, and opaque HTML paragraphs.

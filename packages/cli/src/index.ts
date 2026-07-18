@@ -546,6 +546,22 @@ const operationArguments = (adapter: Adapter, kind: string): DslArgumentSchema =
   ])));
 };
 
+const treeViewArgument = (adapter: Adapter): DslArgumentSchema[string] => {
+  const choices = Object.freeze(adapter.schema.treeViews.map(({ name }) => name));
+  const defaultView = adapter.schema.treeViews.find(({ default: selected }) => selected === true)?.name
+    ?? choices[0];
+  if (defaultView === undefined) {
+    throw new TypeError(`Adapter ${adapter.namespace} does not declare a tree view.`);
+  }
+  return Object.freeze({
+    type: "string",
+    cardinality: "one",
+    required: false,
+    default: defaultView,
+    choices,
+  });
+};
+
 const stringArgument = (args: DslArguments, name: string): string => {
   const value = args[name];
   if (typeof value !== "string") throw new TypeError(`Filesystem argument ${name} must be a string.`);
@@ -578,6 +594,7 @@ const createRuntime = async (config: ResolvedCliConfig, cwd: string) => {
   const json = createJsonAdapter();
   const markdown = createMarkdownAdapter({ json });
   const typescript = createTypeScriptAdapter();
+  const markdownTreeView = treeViewArgument(markdown);
   const builtInAdapters: readonly Adapter[] = [filesystem, json, markdown, typescript];
   const plugins = await loadPlugins(config.plugins, cwd, builtInAdapters.map(({ namespace }) => namespace));
   const adapters: readonly Adapter[] = Object.freeze([...builtInAdapters, ...plugins.adapters]);
@@ -623,8 +640,15 @@ const createRuntime = async (config: ResolvedCliConfig, cwd: string) => {
     markdown: {
       adapter: markdown,
       selectorSource: "roots",
-      arguments: { uri: { type: "string", cardinality: "one", required: true } },
-      open: (args) => fromAdapter(markdown, { uri: args.uri as string }),
+      arguments: {
+        uri: { type: "string", cardinality: "one", required: true },
+        treeView: markdownTreeView,
+      },
+      treeView: (args) => args.treeView as "markdown::syntax-tree" | "markdown::section-tree",
+      open: (args) => fromAdapter(markdown, {
+        uri: args.uri as string,
+        treeView: args.treeView as "markdown::syntax-tree" | "markdown::section-tree",
+      }),
     },
     ts: {
       adapter: typescript,
@@ -651,8 +675,13 @@ const createRuntime = async (config: ResolvedCliConfig, cwd: string) => {
     },
     markdown: {
       adapter: markdown,
-      arguments: {},
-      mount: (query) => mountMarkdown(query, markdown),
+      arguments: {
+        treeView: markdownTreeView,
+      },
+      treeView: (args) => args.treeView as "markdown::syntax-tree" | "markdown::section-tree",
+      mount: (query, args) => mountMarkdown(query, markdown, {
+        treeView: args.treeView as "markdown::syntax-tree" | "markdown::section-tree",
+      }),
     },
     ts: {
       adapter: typescript,

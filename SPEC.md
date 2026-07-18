@@ -662,6 +662,21 @@ Resolved arrays and defaults are immutable. Physical explanations show safe
 resolved built-in options and native pushdowns; sensitive fields are never
 rendered by the generic compiler.
 
+A source or mount may resolve one active named tree view from those arguments.
+The view is validated against that adapter before resource opening, carried
+through selector validation and execution, retained by subsequent selector
+steps and their capture maps, and included in explanations. A mount that
+selects a view replaces the active container view with the mounted adapter's
+view. Derived-value steps such as projection end adapter-backed selection as
+usual. Unknown names and names owned by another adapter produce source-located
+diagnostics.
+
+The built-in Markdown source and mount accept `treeView` with
+`markdown::syntax-tree` as the default and `markdown::section-tree` as the
+alternative. Mounted section traversal uses the section view's declared
+`markdown::mount` and `markdown::sections` child edges; it never falls back to
+`markdown::children`.
+
 The built-in filesystem operations use these textual argument shapes:
 
 ```text
@@ -881,6 +896,11 @@ Default behavior:
 - destructive and irreversible changes are summarized separately;
 - diagnostics include DSL locations and source origins;
 - secrets and connection values are redacted.
+
+The built-in Markdown source and mount accept
+`treeView: "markdown::syntax-tree" | "markdown::section-tree"`. The selected
+view governs every later selector step until another mount selects a view, and
+is reported by `ast explain`.
 
 Non-terminal query output is stable JSON Lines: data uses stdout and diagnostics
 use stderr. Terminals default to indented readable output, while plan previews

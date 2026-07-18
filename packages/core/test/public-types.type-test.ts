@@ -190,7 +190,9 @@ const markdownSource: MarkdownSource = {
   treeView: "markdown::section-tree",
 };
 void markdownSource;
-const mountedMarkdown = mountMarkdown(filesystemQuery, markdown);
+const mountedMarkdown = mountMarkdown(filesystemQuery, markdown, {
+  treeView: "markdown::section-tree",
+});
 void mountedMarkdown;
 
 declare const markdownChange: MarkdownChange;

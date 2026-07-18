@@ -66,6 +66,18 @@ export interface MarkdownAdapterOptions {
   readonly json?: JsonAdapter;
 }
 
+export interface MarkdownMountOptions {
+  readonly treeView?: MarkdownTreeView;
+}
+
+const markdownTreeView = (selected: string | undefined): MarkdownTreeView => {
+  if (selected === undefined || selected === "markdown::syntax-tree") {
+    return "markdown::syntax-tree";
+  }
+  if (selected === "markdown::section-tree") return selected;
+  throw new TypeError(`Unknown Markdown tree view ${JSON.stringify(selected)}.`);
+};
+
 export type MarkdownOperationKind =
   | "markdown::set-heading"
   | "markdown::replace-section";
@@ -279,7 +291,7 @@ const schema = defineAdapterSchema({
   ],
   treeViews: [
     { name: "markdown::syntax-tree", rootKinds: ["markdown::document"], childEdges: ["markdown::mount", "markdown::children"], default: true },
-    { name: "markdown::section-tree", rootKinds: ["markdown::document"], childEdges: ["markdown::sections"] },
+    { name: "markdown::section-tree", rootKinds: ["markdown::document"], childEdges: ["markdown::mount", "markdown::sections"] },
   ],
   capabilities: {
     traversal: ["tree", "reference"],
@@ -764,7 +776,11 @@ export const markdownReplaceSection = (
 };
 
 interface MarkdownInternals {
-  openMounted(container: NodeSnapshot, context: OpenContext): Promise<ResourceHandle | undefined>;
+  openMounted(
+    container: NodeSnapshot,
+    treeView: MarkdownTreeView,
+    context: OpenContext,
+  ): Promise<ResourceHandle | undefined>;
 }
 
 const internals = new WeakMap<MarkdownAdapter, MarkdownInternals>();
@@ -822,6 +838,7 @@ const mountedFileHandle = (
   file: NavigableNodeHandle,
   adapter: MarkdownAdapter,
   json: JsonAdapter | undefined,
+  treeView: MarkdownTreeView,
 ): NavigableNodeHandle =>
   Object.freeze({
     snapshot: file.snapshot,
@@ -834,6 +851,7 @@ const mountedFileHandle = (
           if (implementation === undefined) throw new TypeError("Unknown Markdown adapter instance.");
           const handle = await implementation.openMounted(
             file.snapshot,
+            treeView,
             request.signal === undefined ? {} : { signal: request.signal },
           );
           if (handle === undefined) return;
@@ -866,9 +884,14 @@ const mountedFileHandle = (
 export const mountMarkdown = <Captures extends CaptureMap>(
   files: Query<NavigableNodeHandle, Captures>,
   adapter: MarkdownAdapter,
+  options: MarkdownMountOptions = {},
 ): Query<NavigableNodeHandle, Captures> => {
   const json = (adapter as MarkdownAdapter & { readonly mountedJson?: JsonAdapter }).mountedJson;
-  return files.project((file) => mountedFileHandle(file, adapter, json), "mount markdown");
+  const treeView = markdownTreeView(options.treeView);
+  return files.project(
+    (file) => mountedFileHandle(file, adapter, json, treeView),
+    `mount markdown (${treeView})`,
+  );
 };
 
 export const createMarkdownAdapter = (
@@ -957,10 +980,7 @@ export const createMarkdownAdapter = (
 
   const read: ReadCapability = {
     async open(source: SourceDescriptor, context: OpenContext) {
-      const selected = source.treeView ?? source.options?.treeView;
-      const view: MarkdownTreeView = selected === "markdown::section-tree"
-        ? selected
-        : "markdown::syntax-tree";
+      const view = markdownTreeView(source.treeView ?? source.options?.treeView as string | undefined);
       const uri = pathToFileURL(sourcePath(source.uri)).href;
       const handle = await load(uri, view, undefined, context);
       if (handle === undefined) throw new Error(`Cannot open Markdown source ${uri}.`);
@@ -1158,11 +1178,11 @@ export const createMarkdownAdapter = (
     mountedJson: options.json,
   });
   internals.set(adapter, {
-    openMounted(container, context) {
+    openMounted(container, treeView, context) {
       if (container.kind !== "fs::file" || container.origin?.uri === undefined) {
         throw new TypeError("Markdown mounts require an fs::file with source provenance.");
       }
-      return load(container.origin.uri, "markdown::syntax-tree", container, context);
+      return load(container.origin.uri, treeView, container, context);
     },
   });
   return adapter;
