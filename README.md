@@ -415,7 +415,7 @@ ast query --expr 'from fs({ uri: "." }) | select "fs::file"'
 ast query --file query.dsl --renderer compact
 ast plan --stdin --save plan.json < transform.dsl
 ast plan --file transform.dsl --diff-provider concise
-ast apply --file plan.json --yes --allow-destructive
+ast apply --file plan.json --yes --allow-destructive --failure-policy stop
 ast explain --file query.dsl
 ast schema json
 ast plugins
@@ -431,8 +431,9 @@ file programs by their resolved path, inline programs as `argv:program`, and
 standard input as `stdin:program`.
 
 Options and positional arguments are command-specific: `plan` alone accepts
-`--save`, `apply` alone accepts confirmation and risk acknowledgements,
-`schema` requires one namespace, and `plugins` accepts none. Global and
+`--save`, `apply` alone accepts confirmation, risk acknowledgements, and
+`--failure-policy <stop|continue-independent>`, `schema` requires one namespace,
+and `plugins` accepts none. Global and
 per-command help exit successfully. Unknown, duplicate, missing-value,
 irrelevant, and extra arguments emit `cli.usage` and exit 1.
 
@@ -447,7 +448,13 @@ fallback.
 Piped queries emit stable JSON Lines on stdout and diagnostics as separate JSON
 Lines on stderr. Terminals default to readable indented values and redacted plan
 diffs. Planning cannot apply. Apply never prompts in automation and requires
-explicit confirmation plus risk acknowledgements. Flags override `AST_*`
+explicit confirmation plus risk acknowledgements. Its failure policy defaults
+to `stop`; `continue-independent` schedules only groups whose dependencies
+applied. Pretty and JSON Lines reports keep applied, failed,
+`skipped-dependency`, and `skipped-policy` groups distinct and state whether a
+failure followed any effects. Acknowledgements cover the plan's risks, while
+cancellation interrupts the active adapter, leaves not-yet-started groups
+unscheduled, and exits 130. Flags override `AST_*`
 environment settings, which override `.astrc.json`. The config file is a closed,
 validated object containing only `format`, `color`, `typescriptProject`, and
 structurally validated plugin entries; malformed files, invalid environment
