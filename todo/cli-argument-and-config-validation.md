@@ -14,10 +14,11 @@ and a stable distinction between usage failures and execution diagnostics.
 
 Unknown options, invalid flag values, and explicit missing config files exit 2
 although configuration and usage are specified as exit 1. Extra positionals
-and irrelevant flags such as `query --save` are silently ignored. Invalid
-`.astrc.json` values such as `format: "yaml"` and `color: "rainbow"` are
-accepted. `--help` exits 1, and `schema` without a namespace becomes a generic
-execution diagnostic.
+on non-input commands and irrelevant flags such as `query --save` are silently
+ignored. Input commands reject ambiguous media, but other invalid command
+shapes still lack consistent usage diagnostics. Invalid `.astrc.json` values
+such as `format: "yaml"` and `color: "rainbow"` are accepted. `--help` exits 1,
+and `schema` without a namespace becomes a generic execution diagnostic.
 
 # Scope
 

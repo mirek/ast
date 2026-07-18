@@ -5,7 +5,6 @@ unless a prototype is explicitly intended to answer an earlier design question.
 When a task is complete, delete both its file and this index entry rather than
 marking it completed.
 
-- [Make CLI input modes and diagnostic locations explicit](./todo/cli-input-modes-and-locations.md) — distinguish files, inline programs, saved plans, and stdin without existence guessing.
 - [Harden CLI argument and configuration validation](./todo/cli-argument-and-config-validation.md) — enforce command shapes, config schemas, help behavior, and usage exit codes.
 - [Connect plugin presentation extensions and report complete inventory](./todo/plugin-presentation-and-inventory.md) — make admitted renderers, diffs, and non-adapter plugins visible and usable safely.
 - [Recognize malformed saved plans without DSL fallback](./todo/strict-saved-plan-recognition.md) — reject incomplete envelopes as invalid plans rather than parsing them as DSL.
