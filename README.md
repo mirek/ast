@@ -293,7 +293,7 @@ following selector filters its rows once while preserving explicit bag
 semantics.
 
 ```text
-from ts("src/index.ts")
+from ts({ uri: "src/index.ts" })
 | select 'ts::call[callee = "deprecatedApi"]'
 | invoke ts::replace-call { callee: "replacementApi" }
 | plan
@@ -305,6 +305,19 @@ inner equality joins, invocation, and terminal planning. It has no imports,
 modules, user functions, arbitrary code execution, loops, or recursion. Parser,
 selector, schema/type, capability, and planning diagnostics retain DSL source
 locations, and `formatDsl` is deterministic.
+
+Sources and mounts accept one named argument object. Their compile-environment
+schemas validate scalar types, one/many cardinality, required fields, defaults,
+allowed choices, and unknown fields before opening a resource. For example:
+
+```text
+from fs({ uri: ".", include: ["**/*.json"], kinds: ["fs::file"] })
+| mount json({ onError: "throw" })
+| select 'json::root'
+```
+
+Filesystem explanations report the resolved safe options and pushed filters;
+sensitive argument definitions are not generically rendered.
 
 ## Plugins and trust
 

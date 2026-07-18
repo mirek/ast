@@ -1,7 +1,7 @@
 ---
 title: Support selectors across mounted adapter boundaries
 summary: Validate and execute one selector sequence that crosses a container node and a mounted resource.
-depends_on: [dsl-source-and-mount-options]
+depends_on: []
 spec_sections: [7.2, 8, 9.2, 9.3, 11, 18.1]
 ---
 

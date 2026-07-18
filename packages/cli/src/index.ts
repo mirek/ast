@@ -37,6 +37,8 @@ import type {
   ChangePlan,
   Diagnostic,
   DslEnvironment,
+  FilesystemNodeKind,
+  FilesystemSource,
   JsonValue,
   NodeSnapshot,
   PluginAliases,
@@ -227,15 +229,83 @@ const createRuntime = async (config: ResolvedCliConfig, cwd: string) => {
   const plugins = await loadPlugins(config.plugins, cwd, builtInAdapters.map(({ namespace }) => namespace));
   const adapters: readonly Adapter[] = Object.freeze([...builtInAdapters, ...plugins.adapters]);
   const builtInSources: DslEnvironment["sources"] = {
-    fs: { adapter: filesystem, selectorSource: "selection", open: (args) => fromFilesystem(filesystem, { uri: String(args[0] ?? ".") }) },
-    json: { adapter: json, selectorSource: "roots", open: (args) => fromAdapter(json, { uri: String(args[0] ?? "") }) },
-    markdown: { adapter: markdown, selectorSource: "roots", open: (args) => fromAdapter(markdown, { uri: String(args[0] ?? "") }) },
-    ts: { adapter: typescript, selectorSource: "roots", open: (args) => fromAdapter(typescript, { uri: String(args[0] ?? "") }) },
+    fs: {
+      adapter: filesystem,
+      selectorSource: "selection",
+      arguments: {
+        uri: { type: "string", cardinality: "one", required: false, default: "." },
+        include: { type: "string", cardinality: "many", required: false },
+        exclude: { type: "string", cardinality: "many", required: false },
+        kinds: {
+          type: "string",
+          cardinality: "many",
+          required: false,
+          choices: ["fs::directory", "fs::file", "fs::symlink"],
+        },
+        minSize: { type: "number", cardinality: "one", required: false },
+        maxSize: { type: "number", cardinality: "one", required: false },
+        modifiedAfter: { type: "number", cardinality: "one", required: false },
+        modifiedBefore: { type: "number", cardinality: "one", required: false },
+      },
+      open: (args) => {
+        const source: FilesystemSource = {
+          uri: args.uri as string,
+          ...(args.include === undefined ? {} : { include: args.include as readonly string[] }),
+          ...(args.exclude === undefined ? {} : { exclude: args.exclude as readonly string[] }),
+          ...(args.kinds === undefined ? {} : { kinds: args.kinds as readonly FilesystemNodeKind[] }),
+          ...(args.minSize === undefined ? {} : { minSize: args.minSize as number }),
+          ...(args.maxSize === undefined ? {} : { maxSize: args.maxSize as number }),
+          ...(args.modifiedAfter === undefined ? {} : { modifiedAfter: args.modifiedAfter as number }),
+          ...(args.modifiedBefore === undefined ? {} : { modifiedBefore: args.modifiedBefore as number }),
+        };
+        return fromFilesystem(filesystem, source);
+      },
+    },
+    json: {
+      adapter: json,
+      selectorSource: "roots",
+      arguments: { uri: { type: "string", cardinality: "one", required: true } },
+      open: (args) => fromAdapter(json, { uri: args.uri as string }),
+    },
+    markdown: {
+      adapter: markdown,
+      selectorSource: "roots",
+      arguments: { uri: { type: "string", cardinality: "one", required: true } },
+      open: (args) => fromAdapter(markdown, { uri: args.uri as string }),
+    },
+    ts: {
+      adapter: typescript,
+      selectorSource: "roots",
+      arguments: { uri: { type: "string", cardinality: "one", required: true } },
+      open: (args) => fromAdapter(typescript, { uri: args.uri as string }),
+    },
   };
   const builtInMounts: NonNullable<DslEnvironment["mounts"]> = {
-    json: { adapter: json, mount: (query) => mountJson(query, json) },
-    markdown: { adapter: markdown, mount: (query) => mountMarkdown(query, markdown) },
-    ts: { adapter: typescript, mount: (query) => mountTypeScript(query, typescript) },
+    json: {
+      adapter: json,
+      arguments: {
+        onError: {
+          type: "string",
+          cardinality: "one",
+          required: false,
+          default: "skip",
+          choices: ["skip", "throw"],
+        },
+      },
+      mount: (query, args) => mountJson(query, json, {
+        onError: args.onError as "skip" | "throw",
+      }),
+    },
+    markdown: {
+      adapter: markdown,
+      arguments: {},
+      mount: (query) => mountMarkdown(query, markdown),
+    },
+    ts: {
+      adapter: typescript,
+      arguments: {},
+      mount: (query) => mountTypeScript(query, typescript),
+    },
   };
   const builtInOperations: NonNullable<DslEnvironment["operations"]> = {
     "fs::write": { adapter: filesystem, create: (target, args) => filesystemWrite(target.snapshot, { encoding: "utf8", content: String(args.content ?? "") }) },

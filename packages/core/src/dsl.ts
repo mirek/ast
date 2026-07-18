@@ -6,19 +6,36 @@ import type { Diagnostic } from "./diagnostic.js";
 import { immutableCopy } from "./immutable.js";
 import type { Scalar, SourceRange } from "./model.js";
 import type { CaptureMap, NavigableNodeHandle, Query } from "./query.js";
+import type { Cardinality, ScalarType } from "./schema.js";
 import { SelectorError, selectFrom } from "./selector.js";
 import type { SelectorSourceMode } from "./selector.js";
 
 export interface DslOptions { readonly uri?: string; }
+export type DslArgumentValue = Scalar | readonly Scalar[];
+export interface DslArgumentDefinition {
+  readonly type: ScalarType | readonly ScalarType[];
+  readonly cardinality: Cardinality;
+  readonly required: boolean;
+  readonly default?: DslArgumentValue;
+  readonly choices?: readonly Scalar[];
+  readonly sensitive?: boolean;
+}
+export type DslArgumentSchema = Readonly<Record<string, DslArgumentDefinition>>;
+export type DslArguments = Readonly<Record<string, DslArgumentValue>>;
 export interface DslEnvironment {
   readonly sources: Readonly<Record<string, {
     readonly adapter: Adapter;
     readonly selectorSource: SelectorSourceMode;
-    open(args: readonly Scalar[]): Query<NavigableNodeHandle>;
+    readonly arguments: DslArgumentSchema;
+    open(args: DslArguments): Query<NavigableNodeHandle>;
   }>>;
   readonly mounts?: Readonly<Record<string, {
     readonly adapter: Adapter;
-    mount(query: Query<NavigableNodeHandle, CaptureMap>): Query<NavigableNodeHandle, CaptureMap>;
+    readonly arguments: DslArgumentSchema;
+    mount(
+      query: Query<NavigableNodeHandle, CaptureMap>,
+      args: DslArguments,
+    ): Query<NavigableNodeHandle, CaptureMap>;
   }>>;
   readonly operations?: Readonly<Record<string, {
     readonly adapter: Adapter;
@@ -67,6 +84,7 @@ const splitTopLevel = (source: string, start: number, end: number, separator: st
   let escaped = false;
   let braces = 0;
   let parentheses = 0;
+  let brackets = 0;
   let slashRegex = false;
   let part = start;
   for (let index = start; index < end; index += 1) {
@@ -89,7 +107,9 @@ const splitTopLevel = (source: string, start: number, end: number, separator: st
     else if (character === "}") braces -= 1;
     else if (character === "(") parentheses += 1;
     else if (character === ")") parentheses -= 1;
-    else if (character === separator && braces === 0 && parentheses === 0) {
+    else if (character === "[") brackets += 1;
+    else if (character === "]") brackets -= 1;
+    else if (character === separator && braces === 0 && parentheses === 0 && brackets === 0) {
       values.push(trimmed(source, part, index));
       part = index + 1;
     }
@@ -115,6 +135,7 @@ const validateBalance = (source: string, uri: string): void => {
   let escaped = false;
   let braces = 0;
   let parentheses = 0;
+  let brackets = 0;
   for (let index = 0; index < source.length; index += 1) {
     const character = source[index] ?? "";
     if (quote !== undefined) {
@@ -128,10 +149,12 @@ const validateBalance = (source: string, uri: string): void => {
     else if (character === "}") braces -= 1;
     else if (character === "(") parentheses += 1;
     else if (character === ")") parentheses -= 1;
-    if (braces < 0 || parentheses < 0) throw new DslError([diagnostic("dsl.unbalanced", "Unexpected closing delimiter.", uri, { start: index, end: index + 1 })]);
+    else if (character === "[") brackets += 1;
+    else if (character === "]") brackets -= 1;
+    if (braces < 0 || parentheses < 0 || brackets < 0) throw new DslError([diagnostic("dsl.unbalanced", "Unexpected closing delimiter.", uri, { start: index, end: index + 1 })]);
   }
   if (quote !== undefined) throw new DslError([diagnostic("dsl.unterminated-string", "Unterminated string literal.", uri, { start: quoteStart, end: source.length })]);
-  if (braces !== 0 || parentheses !== 0) throw new DslError([diagnostic("dsl.unbalanced", "Unclosed delimiter.", uri, { start: Math.max(0, source.length - 1), end: source.length })]);
+  if (braces !== 0 || parentheses !== 0 || brackets !== 0) throw new DslError([diagnostic("dsl.unbalanced", "Unclosed delimiter.", uri, { start: Math.max(0, source.length - 1), end: source.length })]);
 };
 const parsePipeline = (source: string, segment: Segment, uri: string): DslPipeline => {
   const parts = splitTopLevel(source, segment.start, segment.end, "|");
@@ -195,15 +218,316 @@ const literal = (value: string, program: DslProgram, range: SourceRange): Scalar
 const commaParts = (source: string, start: number, end: number): readonly Segment[] =>
   splitTopLevel(source, start, end, ",");
 
-const parseFrom = (step: DslStep, program: DslProgram): { readonly name: string; readonly args: readonly Scalar[] } => {
+const scalarKind = (value: Scalar): ScalarType =>
+  value === null ? "null" : typeof value as Exclude<ScalarType, "null">;
+
+const scalarTypes = new Set<ScalarType>([
+  "string",
+  "number",
+  "boolean",
+  "bigint",
+  "null",
+]);
+
+const isScalar = (value: unknown): value is Scalar =>
+  value === null ||
+  typeof value === "string" ||
+  typeof value === "number" ||
+  typeof value === "boolean" ||
+  typeof value === "bigint";
+
+const isSerializableSchemaScalar = (value: Scalar): boolean =>
+  typeof value !== "bigint" && (typeof value !== "number" || Number.isFinite(value));
+
+const allowedTypes = (definition: DslArgumentDefinition): readonly ScalarType[] =>
+  typeof definition.type === "string" ? [definition.type] : definition.type;
+
+const immutableArgumentValue = (value: DslArgumentValue): DslArgumentValue =>
+  Array.isArray(value) ? Object.freeze([...value] as Scalar[]) : value;
+
+const valueMatchesDefinition = (
+  value: Scalar,
+  definition: DslArgumentDefinition,
+): boolean =>
+  allowedTypes(definition).includes(scalarKind(value)) &&
+  (definition.choices === undefined || definition.choices.some((choice) => choice === value));
+
+export const defineDslArgumentSchema = <const T extends DslArgumentSchema>(value: T): T => {
+  for (const [name, definition] of Object.entries(value)) {
+    if (!/^[A-Za-z][A-Za-z0-9_-]*$/u.test(name)) {
+      throw new TypeError(`Invalid DSL argument name ${JSON.stringify(name)}.`);
+    }
+    if (definition === null || typeof definition !== "object") {
+      throw new TypeError(`DSL argument ${name} definition must be an object.`);
+    }
+    const types = typeof definition.type === "string"
+      ? [definition.type]
+      : Array.isArray(definition.type)
+        ? definition.type
+        : [];
+    if (
+      types.length === 0 ||
+      types.some((type) => !scalarTypes.has(type)) ||
+      new Set(types).size !== types.length
+    ) {
+      throw new TypeError(`DSL argument ${name} must declare unique scalar types.`);
+    }
+    if (definition.cardinality !== "one" && definition.cardinality !== "many") {
+      throw new TypeError(`DSL argument ${name} must declare one or many cardinality.`);
+    }
+    if (typeof definition.required !== "boolean") {
+      throw new TypeError(`DSL argument ${name} required flag must be boolean.`);
+    }
+    if (definition.sensitive !== undefined && typeof definition.sensitive !== "boolean") {
+      throw new TypeError(`DSL argument ${name} sensitive flag must be boolean.`);
+    }
+    if (definition.required && definition.default !== undefined) {
+      throw new TypeError(`Required DSL argument ${name} cannot declare a default.`);
+    }
+    const defaults = definition.default === undefined
+      ? undefined
+      : Array.isArray(definition.default)
+        ? definition.default
+        : [definition.default];
+    if (defaults?.some((entry) => !isScalar(entry)) === true) {
+      throw new TypeError(`DSL argument ${name} default must contain only scalar values.`);
+    }
+    if (
+      defaults !== undefined &&
+      (definition.cardinality === "many") !== Array.isArray(definition.default)
+    ) {
+      throw new TypeError(`DSL argument ${name} default has the wrong cardinality.`);
+    }
+    if (defaults?.some((entry) => !valueMatchesDefinition(entry, definition)) === true) {
+      throw new TypeError(`DSL argument ${name} default does not match its type or choices.`);
+    }
+    if (defaults?.some((entry) => !isSerializableSchemaScalar(entry)) === true) {
+      throw new TypeError(`DSL argument ${name} default must be JSON-serializable.`);
+    }
+    if (
+      definition.choices !== undefined &&
+      (!Array.isArray(definition.choices) || definition.choices.some((choice) => !isScalar(choice)))
+    ) {
+      throw new TypeError(`DSL argument ${name} choices must contain only scalar values.`);
+    }
+    if (
+      definition.choices?.some((choice) => !allowedTypes(definition).includes(scalarKind(choice))) === true
+    ) {
+      throw new TypeError(`DSL argument ${name} choices do not match its type.`);
+    }
+    if (
+      definition.choices?.some((choice) => !isSerializableSchemaScalar(choice)) === true
+    ) {
+      throw new TypeError(`DSL argument ${name} choices must be JSON-serializable.`);
+    }
+    if (
+      definition.choices !== undefined &&
+      new Set(definition.choices).size !== definition.choices.length
+    ) {
+      throw new TypeError(`DSL argument ${name} choices must be unique.`);
+    }
+  }
+  return immutableCopy(value);
+};
+
+interface ParsedDslArguments {
+  readonly values: DslArguments;
+  readonly ranges: Readonly<Record<string, SourceRange>>;
+}
+
+const argumentValue = (
+  value: string,
+  program: DslProgram,
+  range: SourceRange,
+): DslArgumentValue => {
+  const source = value.trim();
+  if (!source.startsWith("[")) return literal(source, program, range);
+  if (!source.endsWith("]")) {
+    return fail(program, "dsl.invalid-arguments", "Expected a closed argument array.", range);
+  }
+  const offset = range.start + value.indexOf("[") + 1;
+  const end = range.start + value.lastIndexOf("]");
+  return Object.freeze(
+    commaParts(program.source, offset, end).map((part) =>
+      literal(part.text, program, { start: part.start, end: part.end })),
+  );
+};
+
+const parseArguments = (
+  source: string,
+  range: SourceRange,
+  program: DslProgram,
+): ParsedDslArguments => {
+  const segment = trimmed(program.source, range.start, range.end);
+  if (segment.text.length === 0) {
+    return { values: Object.freeze({}), ranges: Object.freeze({}) };
+  }
+  if (!segment.text.startsWith("{") || !segment.text.endsWith("}")) {
+    return fail(
+      program,
+      "dsl.expected-arguments",
+      "Expected one named argument object.",
+      range,
+    );
+  }
+  const values: Record<string, DslArgumentValue> = {};
+  const ranges: Record<string, SourceRange> = {};
+  for (const entry of commaParts(source, segment.start + 1, segment.end - 1)) {
+    const colon = entry.text.indexOf(":");
+    if (colon < 1) {
+      return fail(
+        program,
+        "dsl.invalid-arguments",
+        "Expected `name: value` in an argument object.",
+        { start: entry.start, end: entry.end },
+      );
+    }
+    const name = entry.text.slice(0, colon).trim();
+    if (!/^[A-Za-z][A-Za-z0-9_-]*$/u.test(name)) {
+      return fail(
+        program,
+        "dsl.invalid-name",
+        "Invalid argument name.",
+        { start: entry.start, end: entry.start + colon },
+      );
+    }
+    if (values[name] !== undefined) {
+      return fail(
+        program,
+        "dsl.duplicate-argument",
+        `Argument ${JSON.stringify(name)} appears more than once.`,
+        { start: entry.start, end: entry.end },
+      );
+    }
+    const valueStart = entry.start + colon + 1;
+    const valueRange = { start: valueStart, end: entry.end };
+    values[name] = argumentValue(entry.text.slice(colon + 1), program, valueRange);
+    ranges[name] = Object.freeze({ start: entry.start, end: entry.end });
+  }
+  return {
+    values: Object.freeze(values),
+    ranges: Object.freeze(ranges),
+  };
+};
+
+const resolveArguments = (
+  schema: DslArgumentSchema,
+  parsed: ParsedDslArguments,
+  program: DslProgram,
+  range: SourceRange,
+): DslArguments => {
+  try {
+    defineDslArgumentSchema(schema);
+  } catch (error) {
+    return fail(
+      program,
+      "dsl.invalid-argument-schema",
+      error instanceof Error ? error.message : "Invalid DSL argument schema.",
+      range,
+    );
+  }
+  for (const name of Object.keys(parsed.values)) {
+    if (schema[name] === undefined) {
+      return fail(
+        program,
+        "dsl.unknown-argument",
+        `Unknown argument ${JSON.stringify(name)}.`,
+        parsed.ranges[name] ?? range,
+      );
+    }
+  }
+  const result: Record<string, DslArgumentValue> = {};
+  for (const [name, definition] of Object.entries(schema)) {
+    const value = parsed.values[name];
+    if (value === undefined) {
+      if (definition.default !== undefined) {
+        result[name] = immutableArgumentValue(definition.default);
+      }
+      else if (definition.required) {
+        return fail(
+          program,
+          "dsl.missing-argument",
+          `Missing required argument ${JSON.stringify(name)}.`,
+          range,
+        );
+      }
+      continue;
+    }
+    const many = Array.isArray(value);
+    if ((definition.cardinality === "many") !== many) {
+      return fail(
+        program,
+        "dsl.argument-cardinality",
+        `Argument ${JSON.stringify(name)} must have ${definition.cardinality} cardinality.`,
+        parsed.ranges[name] ?? range,
+      );
+    }
+    const entries = many ? value : [value];
+    const typeMismatch = entries.some((entry) =>
+      !allowedTypes(definition).includes(scalarKind(entry)));
+    if (typeMismatch) {
+      return fail(
+        program,
+        "dsl.argument-type",
+        `Argument ${JSON.stringify(name)} has the wrong scalar type.`,
+        parsed.ranges[name] ?? range,
+      );
+    }
+    if (
+      definition.choices !== undefined &&
+      entries.some((entry) => !definition.choices?.some((choice) => choice === entry))
+    ) {
+      return fail(
+        program,
+        "dsl.argument-choice",
+        `Argument ${JSON.stringify(name)} is not one of its allowed choices.`,
+        parsed.ranges[name] ?? range,
+      );
+    }
+    result[name] = value;
+  }
+  return immutableCopy(result);
+};
+
+const parseFrom = (
+  step: DslStep,
+  program: DslProgram,
+): { readonly name: string; readonly args: ParsedDslArguments } => {
   const match = /^from\s+([A-Za-z][A-Za-z0-9_-]*)\s*\((.*)\)$/us.exec(step.source);
   if (match === null) return fail(program, "dsl.invalid-source", "Expected `from source(arguments)`.", step.range);
   const argsSource = match[2] ?? "";
   const argsOffset = step.range.start + step.source.indexOf(argsSource);
-  const args = argsSource.trim().length === 0
-    ? []
-    : commaParts(program.source, argsOffset, argsOffset + argsSource.length).map((part) => literal(part.text, program, { start: part.start, end: part.end }));
+  const args = parseArguments(
+    program.source,
+    { start: argsOffset, end: argsOffset + argsSource.length },
+    program,
+  );
   return { name: match[1] ?? "", args };
+};
+
+const parseMount = (
+  step: DslStep,
+  program: DslProgram,
+): { readonly name: string; readonly args: ParsedDslArguments } => {
+  const match = /^mount\s+([A-Za-z][A-Za-z0-9_-]*)\s*\((.*)\)$/us.exec(step.source);
+  if (match === null) {
+    return fail(
+      program,
+      "dsl.invalid-mount",
+      "Expected `mount name(arguments)`.",
+      step.range,
+    );
+  }
+  const argsSource = match[2] ?? "";
+  const argsOffset = step.range.start + step.source.indexOf(argsSource);
+  return {
+    name: match[1] ?? "",
+    args: parseArguments(
+      program.source,
+      { start: argsOffset, end: argsOffset + argsSource.length },
+      program,
+    ),
+  };
 };
 
 const parseObject = (step: DslStep, keyword: string, program: DslProgram): Readonly<Record<string, Scalar>> => {
@@ -299,17 +623,6 @@ const compare = (left: unknown, right: unknown): number => {
   return String(left).localeCompare(String(right));
 };
 
-const scalarType = (value: Scalar): "string" | "number" | "boolean" | "bigint" | "null" =>
-  value === null
-    ? "null"
-    : typeof value === "string"
-      ? "string"
-      : typeof value === "number"
-        ? "number"
-        : typeof value === "boolean"
-          ? "boolean"
-          : "bigint";
-
 const validateWhereType = (
   condition: RegExpExecArray,
   adapter: Adapter | undefined,
@@ -324,7 +637,7 @@ const validateWhereType = (
   const definitions = adapter.schema.kinds.flatMap(({ attributes }) => attributes[attribute] ?? []);
   if (definitions.length === 0) return fail(program, "dsl.unknown-attribute", `Unknown attribute ${JSON.stringify(attribute)}.`, step.range);
   const value = literal(right, program, step.range);
-  const type = scalarType(value);
+  const type = scalarKind(value);
   if (!definitions.some(({ scalar }) => (Array.isArray(scalar) ? scalar : [scalar]).includes(type))) {
     return fail(program, "dsl.type-mismatch", `Attribute ${JSON.stringify(attribute)} cannot be compared with ${type}.`, step.range);
   }
@@ -339,8 +652,14 @@ const compilePipeline = (
   const from = parseFrom(pipeline.source, program);
   const source = environment.sources[from.name];
   if (source === undefined) return fail(program, "dsl.unknown-source", `Unknown source ${JSON.stringify(from.name)}.`, pipeline.source.range);
+  const sourceArguments = resolveArguments(
+    source.arguments,
+    from.args,
+    program,
+    pipeline.source.range,
+  );
   let state: PipelineState = {
-    query: source.open(from.args) as Query<unknown, CaptureMap>,
+    query: source.open(sourceArguments) as Query<unknown, CaptureMap>,
     adapter: source.adapter,
     selectorSource: source.selectorSource,
   };
@@ -348,11 +667,20 @@ const compilePipeline = (
     if (state.terminalPlan === true) return fail(program, "dsl.after-plan", "No pipeline step may follow `plan`.", step.range);
     if (state.invocation !== undefined && step.kind !== "plan") return fail(program, "dsl.expected-plan", "`invoke` must be followed immediately by `plan`.", step.range);
     if (step.kind === "mount") {
-      const name = /^mount\s+([A-Za-z][A-Za-z0-9_-]*)$/u.exec(step.source)?.[1];
-      const mount = name === undefined ? undefined : environment.mounts?.[name];
-      if (mount === undefined) return fail(program, "dsl.unsupported-mount", `Unknown or unsupported mount ${JSON.stringify(name)}.`, step.range);
+      const parsed = parseMount(step, program);
+      const mount = environment.mounts?.[parsed.name];
+      if (mount === undefined) return fail(program, "dsl.unsupported-mount", `Unknown or unsupported mount ${JSON.stringify(parsed.name)}.`, step.range);
+      const mountArguments = resolveArguments(
+        mount.arguments,
+        parsed.args,
+        program,
+        step.range,
+      );
       state = {
-        query: mount.mount(state.query as Query<NavigableNodeHandle, CaptureMap>) as Query<unknown, CaptureMap>,
+        query: mount.mount(
+          state.query as Query<NavigableNodeHandle, CaptureMap>,
+          mountArguments,
+        ) as Query<unknown, CaptureMap>,
         adapter: mount.adapter,
         selectorSource: "roots",
       };

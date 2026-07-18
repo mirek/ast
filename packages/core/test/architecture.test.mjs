@@ -225,6 +225,7 @@ test("TypeScript and DSL queries share one algebra and planning diagnostics reta
       probe: {
         adapter,
         selectorSource: "roots",
+        arguments: {},
         open: () => fromAdapter(adapter, { uri: "memory:origin" }),
       },
     },

@@ -1124,7 +1124,7 @@ export const mountJson = <Captures extends CaptureMap>(
 ): Query<NavigableNodeHandle, Captures> =>
   files.project(
     (file) => mountedFilesystemHandle(file, adapter, options.onError ?? "skip"),
-    "mount json",
+    `mount json (onError=${options.onError ?? "skip"})`,
   );
 
 export const mountJsonTextHandle = (

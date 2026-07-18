@@ -582,7 +582,8 @@ paths.
 Selectors are embedded in a small pipeline language:
 
 ```text
-from fs(".")
+from fs({ uri: ".", include: ["**/*.ts"], kinds: ["fs::file"] })
+| mount ts()
 | select 'fs::file[extension = ".ts"] > ts::source-file ts::call'
 | where @callee = "deprecatedApi"
 | project { file: @origin.uri, line: @origin.range.startLine }
@@ -601,8 +602,8 @@ The validated initial textual grammar is expression-only:
 ```text
 program     := ("let" name "=" pipeline ";")* pipeline
 pipeline    := from-step ("|" step)*
-from-step   := "from" name "(" literal-list? ")"
-step        := "mount" name
+from-step   := "from" name "(" argument-object? ")"
+step        := "mount" name "(" argument-object? ")"
              | "select" quoted-selector
              | "where" expression comparison expression
              | "where" expression "is" ("null" | "missing")
@@ -612,6 +613,9 @@ step        := "mount" name
              | "invoke" namespaced-name "{" argument-list? "}"
              | "plan"
 expression  := literal | "@" path | "$" name ("." path)?
+argument-object := "{" argument-list? "}"
+argument-list   := name ":" argument-value ("," name ":" argument-value)*
+argument-value  := literal | "[" literal-list? "]"
 ```
 
 Literals are quoted strings with explicit escapes, finite numbers, `bigint`
@@ -630,6 +634,14 @@ therefore a selector after `mount` traverses the mounted tree, while a selector
 directly after the built-in recursive filesystem source matches the walked
 stream as-is. The TypeScript `selectFrom` API exposes the same choice through
 `sourceMode`, so textual and programmatic queries retain identical plans.
+Source resolvers and mounts also publish one serializable named-argument schema.
+Each field declares its scalar type, `one` or `many` cardinality, whether it is
+required, and optional default, allowed choices, and sensitivity. Compilation
+rejects missing, unknown, duplicate, ill-typed, wrong-cardinality, and
+disallowed arguments with the field's program span before opening a resource.
+Resolved arrays and defaults are immutable. Physical explanations show safe
+resolved built-in options and native pushdowns; sensitive fields are never
+rendered by the generic compiler.
 There are deliberately no imports, modules, user functions, loops, arbitrary
 code evaluation, general recursion, or privileged execution path. Operations
 not representable through declarative scalar expressions, including general
@@ -644,7 +656,8 @@ Transformations consume selections and emit operations. They do not directly
 mutate node handles.
 
 ```text
-from fs(".")
+from fs({ uri: ".", include: ["**/*.ts"], kinds: ["fs::file"] })
+| mount ts()
 | select 'fs::file[extension = ".ts"] ts::identifier[name = "oldName"]'
 | invoke ts::renameSymbol { name: "newName" }
 | plan
@@ -856,6 +869,9 @@ The corresponding contribution object MAY provide:
 Each source-resolver contribution declares `selectorSource` as `roots` or
 `selection`; the host carries that scope into selector compilation instead of
 guessing from the returned query.
+Resolver and mount contributions use the same serializable named-argument
+schema as built-ins. Plugin registration rejects malformed schemas before an
+alias can expose the contribution.
 
 Every contribution name is namespace-owned. Runtime-loaded schemas MUST declare
 `dynamic: true`, pass the normal schema validation, and exactly match the schema
@@ -1078,7 +1094,8 @@ Find package manifests beneath workspace packages and extract package names and
 dependencies without custom filesystem and JSON traversal code.
 
 ```text
-from fs(".")
+from fs({ uri: ".", include: ["**/package.json"], kinds: ["fs::file"] })
+| mount json()
 | select 'fs::file[name = "package.json"] > json::root'
 | project {
     file: @origin.uri,

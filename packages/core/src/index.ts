@@ -72,9 +72,13 @@ export type {
   DiagnosticLocation,
   DiagnosticSeverity,
 } from "./diagnostic.js";
-export { DslError, compileDsl, formatDsl, parseDsl } from "./dsl.js";
+export { DslError, compileDsl, defineDslArgumentSchema, formatDsl, parseDsl } from "./dsl.js";
 export type {
   CompiledDsl,
+  DslArgumentDefinition,
+  DslArgumentSchema,
+  DslArguments,
+  DslArgumentValue,
   DslBinding,
   DslEnvironment,
   DslExpression,

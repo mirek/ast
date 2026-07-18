@@ -1,6 +1,7 @@
 import type { Adapter, AdapterPluginIdentity, Operation } from "./adapter.js";
 import { validateAdapter } from "./adapter.js";
-import type { DslEnvironment } from "./dsl.js";
+import { defineDslArgumentSchema } from "./dsl.js";
+import type { DslArguments, DslArgumentSchema, DslEnvironment } from "./dsl.js";
 import { immutableCopy } from "./immutable.js";
 import { assertNamespace, assertNamespacedName } from "./model.js";
 import type { NamespacedName, Scalar } from "./model.js";
@@ -47,13 +48,18 @@ export interface PluginResolverContribution {
   readonly name: NamespacedName;
   readonly adapter: Adapter;
   readonly selectorSource: SelectorSourceMode;
-  open(args: readonly Scalar[]): Query<NavigableNodeHandle>;
+  readonly arguments: DslArgumentSchema;
+  open(args: DslArguments): Query<NavigableNodeHandle>;
 }
 
 export interface PluginMountContribution {
   readonly name: NamespacedName;
   readonly adapter: Adapter;
-  mount(query: Query<NavigableNodeHandle, CaptureMap>): Query<NavigableNodeHandle, CaptureMap>;
+  readonly arguments: DslArgumentSchema;
+  mount(
+    query: Query<NavigableNodeHandle, CaptureMap>,
+    args: DslArguments,
+  ): Query<NavigableNodeHandle, CaptureMap>;
 }
 
 export interface PluginOperationContribution {
@@ -342,6 +348,20 @@ export const registerPlugins = (
       if (owner(value.name) !== adapter.namespace) fail("plugin.foreign-namespace", `Contribution ${value.name} does not belong to adapter ${adapter.namespace}.`);
       return Object.freeze({ ...value, adapter });
     };
+    const contributionArguments = (
+      label: string,
+      value: { readonly name: NamespacedName; readonly arguments: DslArgumentSchema },
+    ): DslArgumentSchema => {
+      try {
+        return defineDslArgumentSchema(value.arguments);
+      } catch (error) {
+        return fail(
+          "plugin.invalid-argument-schema",
+          `Plugin ${label} ${value.name} has an invalid DSL argument schema.`,
+          error,
+        );
+      }
+    };
     resolvers.push(...(module.contributions.resolvers ?? []).map((value) => {
       if (value.selectorSource !== "roots" && value.selectorSource !== "selection") {
         fail(
@@ -349,9 +369,10 @@ export const registerPlugins = (
           `Plugin resolver ${value.name} must declare selectorSource as roots or selection.`,
         );
       }
-      return normalizeBound(value);
+      return normalizeBound({ ...value, arguments: contributionArguments("resolver", value) });
     }));
-    mounts.push(...(module.contributions.mounts ?? []).map(normalizeBound));
+    mounts.push(...(module.contributions.mounts ?? []).map((value) =>
+      normalizeBound({ ...value, arguments: contributionArguments("mount", value) })));
     operations.push(...(module.contributions.operations ?? []).map((value) => {
       const normalized = normalizeBound(value);
       if (!normalized.adapter.schema.operations.some(({ kind }) => kind === normalized.name)) fail("plugin.unknown-operation", `Plugin operation ${normalized.name} is absent from its schema.`);
