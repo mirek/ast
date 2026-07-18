@@ -414,6 +414,11 @@ query/apply execution. Rendered values redact conventional secret, token,
 password, credential, and API-key fields. Explicitly saved plans contain private
 adapter payloads and should be treated as sensitive files.
 
+For `apply`, `--expr` is DSL-only. Plan-shaped JSON from files or standard input
+is always passed to the saved-plan loader; incomplete envelopes, malformed
+required arrays, bad integrity, and compatibility failures emit
+`cli.invalid-plan`, exit 3, and never fall back to DSL or reach effects.
+
 ## Architecture conformance
 
 The public-boundary conformance suite demonstrates one repository query mounting
