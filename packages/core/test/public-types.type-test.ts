@@ -95,6 +95,10 @@ const captured = capture(fromValues([1, 2]), "original");
 const projected = project(captured, (value, captures) => value + captures.original);
 void projected;
 
+const projectedWithContext = project(fromValues([1]), (value, _captures, options) =>
+  options.signal?.aborted === true ? 0 : value);
+void projectedWithContext;
+
 project(fromValues([1, 2]), (value, captures) => {
   // @ts-expect-error captures enter scope only after an explicit capture operator
   return value + captures.original;

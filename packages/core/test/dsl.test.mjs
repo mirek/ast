@@ -16,6 +16,7 @@ import {
   fromAdapter,
   fromFilesystem,
   fromMarkdown,
+  fromValues,
   mountJson,
   parseDsl,
   selectFrom,
@@ -102,10 +103,10 @@ test("textual and programmatic queries compile to the same algebra behavior", as
   assert.deepEqual(textual.query.explain(), programmatic.explain());
 });
 
-test("repository inventory and semantic transformation programs are executable", async () => {
+test("repository inventory projects ordered related values with explicit cardinality", async () => {
   const root = await mkdtemp(join(tmpdir(), "ast-dsl-"));
   try {
-    await writeFile(join(root, "package.json"), '{"name":"demo"}\n');
+    await writeFile(join(root, "package.json"), '{"name":"demo","dependencies":{"first":"^1","nullable":null}}\n');
     await writeFile(join(root, "code.ts"), "oldCall(1);\n");
     const filesystem = createFilesystemAdapter();
     const json = createJsonAdapter();
@@ -156,15 +157,116 @@ test("repository inventory and semantic transformation programs are executable",
       [
         `from fs({ uri: ${JSON.stringify(root)} })`,
         "| mount json()",
-        "| select 'json::property[name = \"name\"] > json::scalar'",
-        "| project { file: @origin.uri, name: @value }",
+        "| select 'fs::file[name = \"package.json\"] > json::root'",
+        "| project {",
+        "    file: @origin.uri,",
+        "    name: related(\"one\", 'json::property[name = \"name\"] > json::scalar', @value),",
+        "    missing: related(\"one\", 'json::property[name = \"missing\"] > json::scalar', @value),",
+        "    dependencies: related(\"many\", 'json::property[name = \"dependencies\"] > json::object > json::property as $dependency > json::scalar', { name: $dependency.name, version: @value })",
+        "  }",
       ].join("\n"),
       environment,
     );
     assert.equal(inventory.kind, "query");
-    assert.deepEqual(await inventory.query.toArray(), [
-      { file: new URL("package.json", `file://${root}/`).href, name: "demo" },
-    ]);
+    const expected = [{
+      file: new URL("package.json", `file://${root}/`).href,
+      name: "demo",
+      missing: undefined,
+      dependencies: [
+        { name: "first", version: "^1" },
+        { name: "nullable", version: null },
+      ],
+    }];
+    const inventoryValues = await inventory.query.toArray();
+    assert.deepEqual(inventoryValues, expected);
+    assert.equal(Object.isFrozen(inventoryValues[0].dependencies), true);
+    assert.equal(Object.isFrozen(inventoryValues[0].dependencies[0]), true);
+
+    const mounted = mountJson(fromFilesystem(filesystem, {
+      uri: root,
+      include: ["package.json"],
+      kinds: ["fs::file"],
+    }), json);
+    const roots = selectFrom(
+      mounted,
+      [filesystem.schema, json.schema],
+      'fs::file[name = "package.json"] > json::root',
+    );
+    const relative = async (current, selector, projection, options, mode) => {
+      const values = await selectFrom(fromValues([current]), [filesystem.schema, json.schema], selector)
+        .project(projection)
+        .toArray(options);
+      if (mode === "one") {
+        assert.ok(values.length <= 1);
+        return values[0];
+      }
+      return values;
+    };
+    const programmatic = roots.project(async (value, _captures, options) => ({
+      file: value.snapshot.origin?.uri,
+      name: await relative(
+        value,
+        'json::property[name = "name"] > json::scalar',
+        (relatedNode) => relatedNode.snapshot.attributes.value,
+        options,
+        "one",
+      ),
+      missing: await relative(
+        value,
+        'json::property[name = "missing"] > json::scalar',
+        (relatedNode) => relatedNode.snapshot.attributes.value,
+        options,
+        "one",
+      ),
+      dependencies: await relative(
+        value,
+        'json::property[name = "dependencies"] > json::object > json::property as $dependency > json::scalar',
+        (relatedNode, relatedCaptures) => ({
+          name: relatedCaptures.dependency.snapshot.attributes.name,
+          version: relatedNode.snapshot.attributes.value,
+        }),
+        options,
+        "many",
+      ),
+    }), "dsl project; related one; related one; related many");
+    assert.deepEqual(await programmatic.toArray(), expected);
+    assert.deepEqual(inventory.query.explain(), programmatic.explain());
+
+    await writeFile(join(root, "package.json"), '{"name":"first","name":"second"}\n');
+    const ambiguous = compileDsl(
+      [
+        `from fs({ uri: ${JSON.stringify(root)} })`,
+        "| mount json()",
+        "| select 'fs::file > json::root'",
+        "| project { name: related(\"one\", 'json::property[name = \"name\"] > json::scalar', @value) }",
+      ].join("\n"),
+      environment,
+      { uri: "inventory.dsl" },
+    );
+    assert.equal(ambiguous.kind, "query");
+    await assert.rejects(
+      ambiguous.query.toArray(),
+      (error) => error instanceof DslError && error.diagnostics[0]?.code === "dsl.related-cardinality",
+    );
+    for (const [expression, code] of [
+      ['related("first", \'json::scalar\', @value)', "dsl.related-mode"],
+      ['related("one", \'json::missing\', @value)', "selector.unknown-kind"],
+      ['related("many", \'json::scalar\')', "dsl.related-arguments"],
+    ]) {
+      assert.throws(
+        () => compileDsl(
+          `from fs({ uri: ${JSON.stringify(root)} }) | mount json() | select 'json::root' | project { value: ${expression} }`,
+          environment,
+          { uri: "invalid-related.dsl" },
+        ),
+        (error) => {
+          assert(error instanceof DslError);
+          assert.equal(error.diagnostics[0]?.code, code);
+          assert.equal(error.diagnostics[0]?.locations[0]?.uri, "invalid-related.dsl");
+          return true;
+        },
+      );
+    }
 
     const transformation = compileDsl(
       [

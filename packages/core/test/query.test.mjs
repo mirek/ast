@@ -95,6 +95,17 @@ test("logical operators preserve bags, captures, and deterministic ordering", as
   assert.equal((await cycle.toArray()).length, 6);
 });
 
+test("projection callbacks receive the active execution context", async () => {
+  const controller = new AbortController();
+  const projected = project(
+    fromValues(["value"]),
+    (value, _captures, options) => ({ value, sameSignal: options.signal === controller.signal }),
+  );
+  assert.deepEqual(await projected.toArray({ signal: controller.signal }), [
+    { value: "value", sameSignal: true },
+  ]);
+});
+
 test("functional and fluent APIs build the same logical query", async () => {
   const source = fromValues([3, 1, 2, 2], { ordering: "stable", label: "numbers" });
   const functional = project(

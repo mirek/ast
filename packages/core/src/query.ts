@@ -270,7 +270,11 @@ export class Query<Value, Captures extends CaptureMap = EmptyCaptures>
   }
 
   project<Result>(
-    projection: (value: Value, captures: Captures) => MaybePromise<Result>,
+    projection: (
+      value: Value,
+      captures: Captures,
+      options: ExecuteOptions,
+    ) => MaybePromise<Result>,
     label = "projection",
   ): Query<Result, Captures> {
     const parent = this.#node;
@@ -286,7 +290,7 @@ export class Query<Value, Captures extends CaptureMap = EmptyCaptures>
           async *[Symbol.asyncIterator]() {
             for await (const row of parent.execute(options)) {
               throwIfAborted(options.signal);
-              const value = await projection(row.value, row.captures);
+              const value = await projection(row.value, row.captures, options);
               throwIfAborted(options.signal);
               yield { value, captures: row.captures };
             }
@@ -737,7 +741,11 @@ export const filter = <Value, Captures extends CaptureMap>(
 
 export const project = <Value, Captures extends CaptureMap, Result>(
   query: Query<Value, Captures>,
-  projection: (value: Value, captures: Captures) => MaybePromise<Result>,
+  projection: (
+    value: Value,
+    captures: Captures,
+    options: ExecuteOptions,
+  ) => MaybePromise<Result>,
   label?: string,
 ): Query<Result, Captures> => query.project(projection, label);
 

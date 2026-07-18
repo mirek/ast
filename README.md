@@ -342,6 +342,30 @@ modules, user functions, arbitrary code execution, loops, or recursion. Parser,
 selector, schema/type, capability, and planning diagnostics retain DSL source
 locations, and `formatDsl` is deterministic.
 
+Projection fields can select related graph values without host callbacks. The
+host-reserved `related("one" | "many", selector, expression)` form validates the
+selector against the active mounted schema chain. `one` returns missing for no
+match and fails on ambiguity; `many` returns an ordered array that preserves
+duplicates. Explicit `null` remains distinct from missing, relative selector
+captures are available to nested record expressions, and cancellation reaches
+the nested graph reads:
+
+```text
+from fs({ uri: ".", include: ["**/package.json"], kinds: ["fs::file"] })
+| mount json()
+| select 'fs::file[name = "package.json"] > json::root'
+| project {
+    file: @origin.uri,
+    name: related("one", 'json::property[name = "name"] > json::scalar', @value),
+    dependencies: related("many", 'json::property[name = "dependencies"] > json::object > json::property as $dependency > json::scalar', { name: $dependency.name, version: @value })
+  }
+```
+
+Each outer row remains streaming. `one` reads at most two relative matches;
+`many` buffers only that row's result array. Explanations label these modes, and
+the TypeScript `project` callback receives the same active execution options for
+equivalent cancellation-aware composition.
+
 Sources, mounts, and operations accept one named argument object. Their
 compile-environment schemas validate scalar types, one/many cardinality,
 required fields, defaults, allowed choices, and unknown fields before opening a

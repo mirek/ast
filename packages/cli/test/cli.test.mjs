@@ -175,6 +175,44 @@ test("selectors cross filesystem mount boundaries without losing adapter schemas
     }
   }));
 
+test("repository inventory projects related manifest values through the CLI", async () =>
+  fixture(async (root) => {
+    const first = join(root, "packages", "first");
+    const second = join(root, "packages", "second");
+    await Promise.all([mkdir(first, { recursive: true }), mkdir(second, { recursive: true })]);
+    await Promise.all([
+      writeFile(join(first, "package.json"), '{"name":"first","dependencies":{"alpha":"^1","nullable":null}}\n'),
+      writeFile(join(second, "package.json"), '{"name":"second"}\n'),
+    ]);
+    const program = [
+      `from fs({ uri: ${JSON.stringify(root)}, include: ["packages/*/package.json"], kinds: ["fs::file"] })`,
+      "| mount json()",
+      "| select 'fs::file[name = \"package.json\"] > json::root'",
+      "| project {",
+      "    file: @origin.uri,",
+      "    name: related(\"one\", 'json::property[name = \"name\"] > json::scalar', @value),",
+      "    dependencies: related(\"many\", 'json::property[name = \"dependencies\"] > json::object > json::property as $dependency > json::scalar', { name: $dependency.name, version: @value })",
+      "  }",
+      "| sort file",
+    ].join("\n");
+
+    const result = await run(["query", "--expr", program]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stderr, "");
+    assert.deepEqual(result.stdout.trim().split("\n").map(JSON.parse).map(({ value }) => value), [
+      {
+        dependencies: [{ name: "alpha", version: "^1" }, { name: "nullable", version: null }],
+        file: new URL("packages/first/package.json", `file://${root}/`).href,
+        name: "first",
+      },
+      {
+        dependencies: [],
+        file: new URL("packages/second/package.json", `file://${root}/`).href,
+        name: "second",
+      },
+    ]);
+  }));
+
 test("Markdown tree views are selectable through direct and mounted DSL sources", async () =>
   fixture(async (root) => {
     const document = join(root, "guide.md");
