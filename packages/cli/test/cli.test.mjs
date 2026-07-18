@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,6 +44,12 @@ const run = async (args, options = {}) => {
   } catch (error) {
     return { code: error.code, stdout: error.stdout, stderr: error.stderr };
   }
+};
+
+const resignPlanEnvelope = (envelope) => {
+  const body = JSON.stringify(envelope.plan);
+  envelope.integrity = `sha256:${createHash("sha256").update(body).digest("base64url")}`;
+  return envelope;
 };
 
 test("explicit file, expression, and stdin modes keep truthful locations", async () =>
@@ -173,6 +180,38 @@ test("plan previews cannot apply and saved destructive plans require acknowledge
     assert.equal(rejected.code, 3);
     assert.match(rejected.stderr, /cli.invalid-plan/);
     assert.equal(await readFile(source, "utf8"), "oldCall(1);\n");
+
+    const malformed = [
+      (envelope) => { delete envelope.integrity; },
+      (envelope) => { envelope.integrity = 1; },
+      (envelope) => { delete envelope.plan; },
+      (envelope) => { envelope.plan = null; },
+      (envelope) => { delete envelope.plan.formatVersion; resignPlanEnvelope(envelope); },
+      (envelope) => { envelope.plan.formatVersion = "2"; resignPlanEnvelope(envelope); },
+      ...["adapters", "resources", "changes", "diagnostics", "transactionGroups"].flatMap((field) => [
+        (envelope) => { delete envelope.plan[field]; resignPlanEnvelope(envelope); },
+        (envelope) => { envelope.plan[field] = {}; resignPlanEnvelope(envelope); },
+      ]),
+    ];
+    await Promise.all(malformed.map(async (mutate, index) => {
+      const envelope = structuredClone(invalidEnvelope);
+      mutate(envelope);
+      const path = join(root, `malformed-plan-${index}.json`);
+      await writeFile(path, JSON.stringify(envelope));
+      const result = await run(["apply", "--file", path, "--yes", "--allow-destructive"]);
+      assert.equal(result.code, 3, `mutation ${index}`);
+      assert.equal(JSON.parse(result.stderr).value.code, "cli.invalid-plan", `mutation ${index}`);
+    }));
+    assert.equal(await readFile(source, "utf8"), "oldCall(1);\n");
+
+    const rawPlan = join(root, "raw-plan.json");
+    await writeFile(rawPlan, JSON.stringify(invalidEnvelope.plan));
+    const rawRejected = await run(["apply", "--file", rawPlan, "--yes", "--allow-destructive"]);
+    assert.equal(rawRejected.code, 3);
+    assert.match(rawRejected.stderr, /cli.invalid-plan/);
+    const inlineJson = await run(["apply", "--expr", '{"hello":"world"}', "--yes"]);
+    assert.equal(inlineJson.code, 2);
+    assert.match(inlineJson.stderr, /dsl\./);
 
     const refused = await run(["apply", saved]);
     assert.equal(refused.code, 4);

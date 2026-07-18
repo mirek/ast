@@ -864,8 +864,12 @@ ignored merely because a higher-precedence setting is present.
 
 `plan` only previews and optionally saves. Non-interactive apply never prompts
 and requires `--yes`, plus `--allow-destructive` or `--allow-irreversible` for
-those risks. Saved-plan envelopes are recognized strictly and cannot fall back
-to DSL after integrity or compatibility failure. SIGINT cancels through an
+those risks. `apply --expr` is always DSL. File and stdin JSON objects bearing
+`integrity`, `plan`, or `formatVersion` are conservatively recognized as saved
+plan input; missing, mistyped, malformed, integrity-invalid, or incompatible
+envelopes exit 3 with `cli.invalid-plan` and cannot fall back to DSL. The loader
+requires the complete adapter, resource, change, diagnostic, and transaction
+group arrays before a plan can reach an effect boundary. SIGINT cancels through an
 `AbortSignal`, including during standard-input reads, and exits 130.
 
 Exit statuses are 0 success, 1 usage/configuration, 2 execution or diagnostic

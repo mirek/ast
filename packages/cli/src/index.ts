@@ -791,12 +791,16 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
     const text = await readInput(input, io);
     let savedPlan: ChangePlan | undefined;
     if (command === "apply") {
-      let envelope = false;
+      let planShaped = false;
       try {
-        const parsedInput = JSON.parse(text) as { readonly integrity?: unknown; readonly plan?: unknown };
-        envelope = typeof parsedInput.integrity === "string" && parsedInput.plan !== undefined;
+        const parsedInput = JSON.parse(text) as unknown;
+        planShaped = input.kind !== "expression"
+          && parsedInput !== null
+          && typeof parsedInput === "object"
+          && !Array.isArray(parsedInput)
+          && ["integrity", "plan", "formatVersion"].some((field) => field in parsedInput);
       } catch { /* Non-JSON input is treated as DSL. */ }
-      if (envelope) {
+      if (planShaped) {
         try {
           savedPlan = deserializeChangePlan(text, { adapters: runtime.adapters });
         } catch (error) {

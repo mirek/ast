@@ -505,7 +505,14 @@ export const deserializeChangePlan = (
     throw new TypeError("Saved change-plan integrity check failed.");
   }
   const plan = envelope.plan as ChangePlan;
-  if (plan.formatVersion !== "1" || !Array.isArray(plan.changes)) {
+  if (
+    plan === null || typeof plan !== "object" || plan.formatVersion !== "1"
+    || !Array.isArray(plan.adapters)
+    || !Array.isArray(plan.resources)
+    || !Array.isArray(plan.changes)
+    || !Array.isArray(plan.diagnostics)
+    || !Array.isArray(plan.transactionGroups)
+  ) {
     throw new TypeError("Unsupported saved change-plan format.");
   }
   validateAdapters(plan, options.adapters);
