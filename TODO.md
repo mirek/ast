@@ -5,7 +5,6 @@ unless a prototype is explicitly intended to answer an earlier design question.
 When a task is complete, delete both its file and this index entry rather than
 marking it completed.
 
-- [Expose Markdown tree views in textual queries](./todo/markdown-tree-view-dsl.md) — make syntax and section containment selectable through DSL and CLI.
 - [Add configured-project TypeScript workflows to the CLI](./todo/typescript-project-cli.md) — expose symbol edges and semantic rename with an explicit project.
 - [Connect plugin predicates and scalar functions to query execution](./todo/plugin-query-extensions.md) — give admitted query extensions a real selector and DSL execution path.
 - [Expose change-plan failure policy in the CLI](./todo/cli-apply-failure-policy.md) — allow explicit stop or continue-independent apply scheduling.

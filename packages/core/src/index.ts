@@ -152,6 +152,7 @@ export type {
   MarkdownAdapter,
   MarkdownAdapterOptions,
   MarkdownChange,
+  MarkdownMountOptions,
   MarkdownNodeKind,
   MarkdownOperation,
   MarkdownOperationKind,

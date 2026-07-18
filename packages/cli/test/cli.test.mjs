@@ -175,6 +175,65 @@ test("selectors cross filesystem mount boundaries without losing adapter schemas
     }
   }));
 
+test("Markdown tree views are selectable through direct and mounted DSL sources", async () =>
+  fixture(async (root) => {
+    const document = join(root, "guide.md");
+    await writeFile(document, "# Repeat\nFirst.\n## Child\nNested.\n# Repeat\nSecond.\n");
+    const markdownSource = (treeView) =>
+      `from markdown({ uri: ${JSON.stringify(document)}, treeView: ${JSON.stringify(treeView)} })`;
+    const titles = async (program) => {
+      const result = await run(["query", "--expr", program]);
+      assert.equal(result.code, 0, result.stderr);
+      return result.stdout.trim().split("\n").map(JSON.parse).map(({ value }) => value);
+    };
+
+    const syntax = await titles([
+      markdownSource("markdown::syntax-tree"),
+      "| select 'markdown::document > markdown::heading'",
+      "| project { title: @title }",
+    ].join("\n"));
+    assert.deepEqual(syntax.map(({ title }) => title), ["Repeat", "Child", "Repeat"]);
+
+    const sections = await titles([
+      markdownSource("markdown::section-tree"),
+      "| select 'markdown::document > markdown::section'",
+      "| project { title: @title, id: @id.local }",
+    ].join("\n"));
+    assert.deepEqual(sections.map(({ title }) => title), ["Repeat", "Repeat"]);
+    assert.notEqual(sections[0].id, sections[1].id);
+
+    const nested = await titles([
+      markdownSource("markdown::section-tree"),
+      "| select 'markdown::document > markdown::section > markdown::section'",
+      "| project { title: @title }",
+    ].join("\n"));
+    assert.deepEqual(nested.map(({ title }) => title), ["Child"]);
+
+    const mounted = await titles([
+      `from fs({ uri: ${JSON.stringify(root)}, include: ["guide.md"], kinds: ["fs::file"] })`,
+      '| mount markdown({ treeView: "markdown::section-tree" })',
+      "| select 'fs::file > markdown::document > markdown::section'",
+      "| project { title: @title }",
+    ].join("\n"));
+    assert.deepEqual(mounted.map(({ title }) => title), ["Repeat", "Repeat"]);
+
+    const explained = await run([
+      "explain",
+      "--expr",
+      `${markdownSource("markdown::section-tree")} | select 'markdown::section'`,
+    ]);
+    assert.equal(explained.code, 0, explained.stderr);
+    assert.match(explained.stdout, /markdown::section-tree/);
+
+    for (const treeView of ["markdown::missing", "json::document"]) {
+      // oxlint-disable-next-line no-await-in-loop -- diagnostics are checked independently.
+      const invalid = await run(["query", "--expr", markdownSource(treeView)]);
+      assert.equal(invalid.code, 2);
+      assert.match(invalid.stderr, /dsl\.argument-choice/);
+      assert.equal(JSON.parse(invalid.stderr).value.locations[0].uri, "argv:program");
+    }
+  }));
+
 test("filesystem CLI operations preview and apply the complete encoded surface", async () =>
   fixture(async (root) => {
     await Promise.all([

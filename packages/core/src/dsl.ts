@@ -4,7 +4,7 @@ import type { ChangePlan } from "./change.js";
 import { defineDiagnostic } from "./diagnostic.js";
 import type { Diagnostic } from "./diagnostic.js";
 import { immutableCopy } from "./immutable.js";
-import type { Scalar, SourceRange } from "./model.js";
+import type { NamespacedName, Scalar, SourceRange } from "./model.js";
 import type { CaptureMap, NavigableNodeHandle, Query } from "./query.js";
 import type { AdapterSchema, Cardinality, ScalarType } from "./schema.js";
 import { SelectorError, selectFrom } from "./selector.js";
@@ -27,11 +27,13 @@ export interface DslEnvironment {
     readonly adapter: Adapter;
     readonly selectorSource: SelectorSourceMode;
     readonly arguments: DslArgumentSchema;
+    treeView?(args: DslArguments): NamespacedName | undefined;
     open(args: DslArguments): Query<NavigableNodeHandle>;
   }>>;
   readonly mounts?: Readonly<Record<string, {
     readonly adapter: Adapter;
     readonly arguments: DslArgumentSchema;
+    treeView?(args: DslArguments): NamespacedName | undefined;
     mount(
       query: Query<NavigableNodeHandle, CaptureMap>,
       args: DslArguments,
@@ -607,6 +609,7 @@ interface PipelineState {
   readonly adapter?: Adapter;
   readonly selectorSchemas?: readonly AdapterSchema[];
   readonly selectorSource?: SelectorSourceMode;
+  readonly treeView?: NamespacedName;
   readonly invocation?: {
     readonly step: DslStep;
     readonly adapter: Adapter;
@@ -623,6 +626,25 @@ const selectorFailure = (error: SelectorError, program: DslProgram, offset: numb
       ? { ...location, uri: program.uri, range: { ...location.range, start: location.range.start + offset, end: location.range.end + offset } }
       : location),
   })));
+
+const resolveTreeView = (
+  adapter: Adapter,
+  selected: NamespacedName | undefined,
+  program: DslProgram,
+  range: SourceRange,
+): NamespacedName | undefined => {
+  if (selected === undefined) return undefined;
+  if (!adapter.schema.treeViews.some(({ name }) => name === selected)) {
+    const namespace = selected.slice(0, selected.indexOf("::"));
+    return fail(
+      program,
+      namespace === adapter.namespace ? "dsl.unknown-tree-view" : "dsl.incompatible-tree-view",
+      `Tree view ${JSON.stringify(selected)} is not available from adapter ${adapter.namespace}.`,
+      range,
+    );
+  }
+  return selected;
+};
 
 const compare = (left: unknown, right: unknown): number => {
   if (left === right) return 0;
@@ -669,11 +691,18 @@ const compilePipeline = (
     program,
     pipeline.source.range,
   );
+  const sourceTreeView = resolveTreeView(
+    source.adapter,
+    source.treeView?.(sourceArguments),
+    program,
+    pipeline.source.range,
+  );
   let state: PipelineState = {
     query: source.open(sourceArguments) as Query<unknown, CaptureMap>,
     adapter: source.adapter,
     selectorSchemas: Object.freeze([source.adapter.schema]),
     selectorSource: source.selectorSource,
+    ...(sourceTreeView === undefined ? {} : { treeView: sourceTreeView }),
   };
   for (const step of pipeline.steps) {
     if (state.terminalPlan === true) return fail(program, "dsl.after-plan", "No pipeline step may follow `plan`.", step.range);
@@ -688,6 +717,12 @@ const compilePipeline = (
         program,
         step.range,
       );
+      const mountTreeView = resolveTreeView(
+        mount.adapter,
+        mount.treeView?.(mountArguments),
+        program,
+        step.range,
+      );
       state = {
         query: mount.mount(
           state.query as Query<NavigableNodeHandle, CaptureMap>,
@@ -696,6 +731,7 @@ const compilePipeline = (
         adapter: mount.adapter,
         selectorSchemas: Object.freeze([...(state.selectorSchemas ?? []), mount.adapter.schema]),
         selectorSource: "roots",
+        ...(mountTreeView === undefined ? {} : { treeView: mountTreeView }),
       };
       continue;
     }
@@ -710,11 +746,16 @@ const compilePipeline = (
             state.query as Query<NavigableNodeHandle, CaptureMap>,
             state.selectorSchemas ?? [state.adapter.schema],
             selector,
-            { uri: program.uri, sourceMode: state.selectorSource ?? "roots" },
+            {
+              uri: program.uri,
+              sourceMode: state.selectorSource ?? "roots",
+              ...(state.treeView === undefined ? {} : { treeView: state.treeView }),
+            },
           ) as Query<unknown, CaptureMap>,
           adapter: state.adapter,
           ...(state.selectorSchemas === undefined ? {} : { selectorSchemas: state.selectorSchemas }),
           selectorSource: "roots",
+          ...(state.treeView === undefined ? {} : { treeView: state.treeView }),
         };
       } catch (error) {
         if (error instanceof SelectorError) throw selectorFailure(error, program, quoteOffset);

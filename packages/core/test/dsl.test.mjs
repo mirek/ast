@@ -10,10 +10,12 @@ import {
   createFilesystemAdapter,
   createInMemoryAdapter,
   createJsonAdapter,
+  createMarkdownAdapter,
   createTypeScriptAdapter,
   formatDsl,
   fromAdapter,
   fromFilesystem,
+  fromMarkdown,
   mountJson,
   parseDsl,
   selectFrom,
@@ -294,6 +296,66 @@ test("filesystem stream selectors match an explicitly scoped TypeScript query", 
         },
       );
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Markdown tree-view selection retains captures and matches the TypeScript API", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ast-dsl-markdown-view-"));
+  try {
+    const path = join(root, "guide.md");
+    await writeFile(path, "# Parent\nBody.\n## Child\nNested.\n# Other\nEnd.\n");
+    const markdown = createMarkdownAdapter();
+    const treeView = "markdown::section-tree";
+    const environment = {
+      sources: {
+        markdown: {
+          adapter: markdown,
+          selectorSource: "roots",
+          arguments: {
+            uri: { type: "string", cardinality: "one", required: true },
+            treeView: {
+              type: "string",
+              cardinality: "one",
+              required: true,
+              choices: ["markdown::syntax-tree", "markdown::section-tree"],
+            },
+          },
+          treeView: (args) => args.treeView,
+          open: (args) => fromMarkdown(markdown, {
+            uri: args.uri,
+            treeView: args.treeView,
+          }),
+        },
+      },
+    };
+    const selector = "markdown::document > markdown::section";
+    const textual = compileDsl(
+      `from markdown({ uri: ${JSON.stringify(path)}, treeView: ${JSON.stringify(treeView)} }) | select '${selector}'`,
+      environment,
+    );
+    assert.equal(textual.kind, "query");
+    const programmatic = selectFrom(
+      fromMarkdown(markdown, { uri: path, treeView }),
+      markdown.schema,
+      selector,
+      { treeView },
+    );
+    assert.deepEqual(
+      (await textual.query.toArray()).map(({ snapshot }) => snapshot.id),
+      (await programmatic.toArray()).map(({ snapshot }) => snapshot.id),
+    );
+    assert.deepEqual(textual.query.explain(), programmatic.explain());
+
+    const retained = compileDsl([
+      `from markdown({ uri: ${JSON.stringify(path)}, treeView: ${JSON.stringify(treeView)} })`,
+      "| select 'markdown::document > markdown::section as $parent'",
+      "| select 'markdown::section > markdown::section as $child'",
+      "| project { parent: $parent.title, child: $child.title }",
+    ].join("\n"), environment);
+    assert.equal(retained.kind, "query");
+    assert.deepEqual(await retained.query.toArray(), [{ parent: "Parent", child: "Child" }]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
