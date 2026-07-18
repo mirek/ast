@@ -1,7 +1,7 @@
 ---
 title: Expose the complete filesystem transformation surface in the CLI
 summary: Make filesystem move, remove, create, and encoded write operations available with their adapter-owned safety semantics.
-depends_on: [filesystem-selector-source-semantics]
+depends_on: []
 spec_sections: [7.3, 10, 13, 17.1, 17.2]
 ---
 

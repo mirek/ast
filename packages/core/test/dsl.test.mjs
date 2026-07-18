@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -16,6 +16,7 @@ import {
   fromFilesystem,
   mountJson,
   parseDsl,
+  selectFrom,
   typeScriptReplaceCall,
 } from "@mirek/ast";
 
@@ -43,6 +44,7 @@ const memoryEnvironment = () => {
       sources: {
         memory: {
           adapter,
+          selectorSource: "roots",
           open: ([uri]) => fromAdapter(adapter, { uri }),
         },
       },
@@ -107,6 +109,7 @@ test("repository inventory and semantic transformation programs are executable",
       sources: {
         fs: {
           adapter: filesystem,
+          selectorSource: "selection",
           open: ([uri]) => fromFilesystem(filesystem, {
             uri,
             include: ["package.json"],
@@ -115,6 +118,7 @@ test("repository inventory and semantic transformation programs are executable",
         },
         ts: {
           adapter: typescript,
+          selectorSource: "roots",
           open: ([uri]) => fromAdapter(typescript, { uri }),
         },
       },
@@ -161,6 +165,80 @@ test("repository inventory and semantic transformation programs are executable",
     const plan = await transformation.plan();
     assert.equal(plan.changes.length, 1);
     assert.equal(await readFile(join(root, "code.ts"), "utf8"), "oldCall(1);\n");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("filesystem stream selectors match an explicitly scoped TypeScript query", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ast-dsl-fs-selector-"));
+  try {
+    await mkdir(join(root, "nested"));
+    await writeFile(join(root, "root.ts"), "export {};\n");
+    await writeFile(join(root, "nested", "nested.ts"), "export {};\n");
+    await writeFile(join(root, "root.json"), "{\"value\":1}\n");
+    await writeFile(join(root, "nested", "nested.json"), "{\"value\":2}\n");
+    const filesystem = createFilesystemAdapter();
+    const source = () => fromFilesystem(filesystem, { uri: root });
+    const selector = 'fs::file[extension = ".ts"]';
+    const textual = compileDsl(
+      `from fs(${JSON.stringify(root)}) | select '${selector}'`,
+      {
+        sources: {
+          fs: {
+            adapter: filesystem,
+            selectorSource: "selection",
+            open: source,
+          },
+        },
+      },
+    );
+    const programmatic = selectFrom(source(), filesystem.schema, selector, {
+      sourceMode: "selection",
+    });
+
+    assert.equal(textual.kind, "query");
+    assert.deepEqual(
+      await textual.query.project((value) => value.snapshot.attributes.path).toArray(),
+      ["nested/nested.ts", "root.ts"],
+    );
+    assert.deepEqual(textual.query.explain(), programmatic.explain());
+
+    const json = createJsonAdapter();
+    const jsonSource = () => fromFilesystem(filesystem, {
+      uri: root,
+      include: ["**/*.json"],
+      kinds: ["fs::file"],
+    });
+    const mountedTextual = compileDsl(
+      `from fs(${JSON.stringify(root)}) | mount json | select 'json::scalar'`,
+      {
+        sources: {
+          fs: {
+            adapter: filesystem,
+            selectorSource: "selection",
+            open: jsonSource,
+          },
+        },
+        mounts: {
+          json: {
+            adapter: json,
+            mount: (query) => mountJson(query, json),
+          },
+        },
+      },
+    );
+    const mountedProgrammatic = selectFrom(
+      mountJson(jsonSource(), json),
+      json.schema,
+      "json::scalar",
+    );
+    assert.equal(mountedTextual.kind, "query");
+    assert.deepEqual(
+      await mountedTextual.query.project((value) => value.snapshot.attributes.value).toArray(),
+      [2, 1],
+    );
+    assert.deepEqual(mountedTextual.query.explain(), mountedProgrammatic.explain());
   } finally {
     await rm(root, { recursive: true, force: true });
   }

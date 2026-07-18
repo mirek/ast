@@ -7,11 +7,13 @@ import { immutableCopy } from "./immutable.js";
 import type { Scalar, SourceRange } from "./model.js";
 import type { CaptureMap, NavigableNodeHandle, Query } from "./query.js";
 import { SelectorError, selectFrom } from "./selector.js";
+import type { SelectorSourceMode } from "./selector.js";
 
 export interface DslOptions { readonly uri?: string; }
 export interface DslEnvironment {
   readonly sources: Readonly<Record<string, {
     readonly adapter: Adapter;
+    readonly selectorSource: SelectorSourceMode;
     open(args: readonly Scalar[]): Query<NavigableNodeHandle>;
   }>>;
   readonly mounts?: Readonly<Record<string, {
@@ -269,6 +271,7 @@ const parseProjection = (step: DslStep, program: DslProgram): readonly { readonl
 interface PipelineState {
   readonly query: Query<unknown, CaptureMap>;
   readonly adapter?: Adapter;
+  readonly selectorSource?: SelectorSourceMode;
   readonly invocation?: {
     readonly step: DslStep;
     readonly adapter: Adapter;
@@ -339,6 +342,7 @@ const compilePipeline = (
   let state: PipelineState = {
     query: source.open(from.args) as Query<unknown, CaptureMap>,
     adapter: source.adapter,
+    selectorSource: source.selectorSource,
   };
   for (const step of pipeline.steps) {
     if (state.terminalPlan === true) return fail(program, "dsl.after-plan", "No pipeline step may follow `plan`.", step.range);
@@ -347,7 +351,11 @@ const compilePipeline = (
       const name = /^mount\s+([A-Za-z][A-Za-z0-9_-]*)$/u.exec(step.source)?.[1];
       const mount = name === undefined ? undefined : environment.mounts?.[name];
       if (mount === undefined) return fail(program, "dsl.unsupported-mount", `Unknown or unsupported mount ${JSON.stringify(name)}.`, step.range);
-      state = { query: mount.mount(state.query as Query<NavigableNodeHandle, CaptureMap>) as Query<unknown, CaptureMap>, adapter: mount.adapter };
+      state = {
+        query: mount.mount(state.query as Query<NavigableNodeHandle, CaptureMap>) as Query<unknown, CaptureMap>,
+        adapter: mount.adapter,
+        selectorSource: "roots",
+      };
       continue;
     }
     if (step.kind === "select") {
@@ -356,7 +364,16 @@ const compilePipeline = (
       const selector = unquote(quoted, program, step.range);
       const quoteOffset = step.range.start + step.source.indexOf(quoted) + 1;
       try {
-        state = { query: selectFrom(state.query as Query<NavigableNodeHandle, CaptureMap>, state.adapter.schema, selector, { uri: program.uri }) as Query<unknown, CaptureMap>, adapter: state.adapter };
+        state = {
+          query: selectFrom(
+            state.query as Query<NavigableNodeHandle, CaptureMap>,
+            state.adapter.schema,
+            selector,
+            { uri: program.uri, sourceMode: state.selectorSource ?? "roots" },
+          ) as Query<unknown, CaptureMap>,
+          adapter: state.adapter,
+          selectorSource: "roots",
+        };
       } catch (error) {
         if (error instanceof SelectorError) throw selectorFailure(error, program, quoteOffset);
         throw error;

@@ -227,10 +227,10 @@ const createRuntime = async (config: ResolvedCliConfig, cwd: string) => {
   const plugins = await loadPlugins(config.plugins, cwd, builtInAdapters.map(({ namespace }) => namespace));
   const adapters: readonly Adapter[] = Object.freeze([...builtInAdapters, ...plugins.adapters]);
   const builtInSources: DslEnvironment["sources"] = {
-    fs: { adapter: filesystem, open: (args) => fromFilesystem(filesystem, { uri: String(args[0] ?? ".") }) },
-    json: { adapter: json, open: (args) => fromAdapter(json, { uri: String(args[0] ?? "") }) },
-    markdown: { adapter: markdown, open: (args) => fromAdapter(markdown, { uri: String(args[0] ?? "") }) },
-    ts: { adapter: typescript, open: (args) => fromAdapter(typescript, { uri: String(args[0] ?? "") }) },
+    fs: { adapter: filesystem, selectorSource: "selection", open: (args) => fromFilesystem(filesystem, { uri: String(args[0] ?? ".") }) },
+    json: { adapter: json, selectorSource: "roots", open: (args) => fromAdapter(json, { uri: String(args[0] ?? "") }) },
+    markdown: { adapter: markdown, selectorSource: "roots", open: (args) => fromAdapter(markdown, { uri: String(args[0] ?? "") }) },
+    ts: { adapter: typescript, selectorSource: "roots", open: (args) => fromAdapter(typescript, { uri: String(args[0] ?? "") }) },
   };
   const builtInMounts: NonNullable<DslEnvironment["mounts"]> = {
     json: { adapter: json, mount: (query) => mountJson(query, json) },

@@ -7,6 +7,7 @@ import type { NamespacedName, Scalar } from "./model.js";
 import type { CaptureMap, NavigableNodeHandle, Query } from "./query.js";
 import type { AdapterSchema } from "./schema.js";
 import { defineAdapterSchema } from "./schema.js";
+import type { SelectorSourceMode } from "./selector.js";
 
 export type PluginPower =
   | "resource:read"
@@ -45,6 +46,7 @@ export interface PluginManifest {
 export interface PluginResolverContribution {
   readonly name: NamespacedName;
   readonly adapter: Adapter;
+  readonly selectorSource: SelectorSourceMode;
   open(args: readonly Scalar[]): Query<NavigableNodeHandle>;
 }
 
@@ -340,7 +342,15 @@ export const registerPlugins = (
       if (owner(value.name) !== adapter.namespace) fail("plugin.foreign-namespace", `Contribution ${value.name} does not belong to adapter ${adapter.namespace}.`);
       return Object.freeze({ ...value, adapter });
     };
-    resolvers.push(...(module.contributions.resolvers ?? []).map(normalizeBound));
+    resolvers.push(...(module.contributions.resolvers ?? []).map((value) => {
+      if (value.selectorSource !== "roots" && value.selectorSource !== "selection") {
+        fail(
+          "plugin.invalid-selector-source",
+          `Plugin resolver ${value.name} must declare selectorSource as roots or selection.`,
+        );
+      }
+      return normalizeBound(value);
+    }));
     mounts.push(...(module.contributions.mounts ?? []).map(normalizeBound));
     operations.push(...(module.contributions.operations ?? []).map((value) => {
       const normalized = normalizeBound(value);

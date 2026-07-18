@@ -221,7 +221,13 @@ test("TypeScript and DSL queries share one algebra and planning diagnostics reta
     diagnostics: () => diagnostics,
   });
   const environment = {
-    sources: { probe: { adapter, open: () => fromAdapter(adapter, { uri: "memory:origin" }) } },
+    sources: {
+      probe: {
+        adapter,
+        selectorSource: "roots",
+        open: () => fromAdapter(adapter, { uri: "memory:origin" }),
+      },
+    },
     operations: { "probe::fail": { adapter, create: (target) => ({ kind: "probe::fail", resource: "fixture", target: target.snapshot.id, payload: {} }) } },
   };
   const programmatic = selectFrom(fromAdapter(adapter, { uri: "memory:origin" }), schema, 'probe::node[name = "demo"]');
