@@ -360,7 +360,9 @@ different declared implementation, but it does not attest module bytes.
 ```sh
 ast query --file query.dsl
 ast query --expr 'from fs({ uri: "." }) | select "fs::file"'
+ast query --file query.dsl --renderer compact
 ast plan --stdin --save plan.json < transform.dsl
+ast plan --file transform.dsl --diff-provider concise
 ast apply --file plan.json --yes --allow-destructive
 ast explain --file query.dsl
 ast schema json
@@ -382,6 +384,14 @@ Options and positional arguments are command-specific: `plan` alone accepts
 per-command help exit successfully. Unknown, duplicate, missing-value,
 irrelevant, and extra arguments emit `cli.usage` and exit 1.
 
+Configured renderer aliases can be selected explicitly for terminal pretty
+queries with `--renderer`; configured diff-provider aliases can be selected for
+terminal plans with `--diff-provider`. Automation never calls them: JSON Lines
+remain canonical and non-terminal plans retain the host renderer. Callbacks see
+only host-redacted copies, sensitive previews become `[REDACTED]`, and callback
+failures produce `plugin.presentation-failed` without a content-bearing
+fallback.
+
 Piped queries emit stable JSON Lines on stdout and diagnostics as separate JSON
 Lines on stderr. Terminals default to readable indented values and redacted plan
 diffs. Planning cannot apply. Apply never prompts in automation and requires
@@ -391,6 +401,11 @@ validated object containing only `format`, `color`, and structurally validated
 plugin entries; malformed files, invalid environment enums, unknown fields, and
 duplicate plugin identities or aliases emit `cli.invalid-config` and exit 1
 before plugin code is loaded.
+
+`ast plugins` reports built-in adapters separately from every loaded plugin
+package. Plugin rows include package identity, trust/isolation, required and
+approved powers, namespaces, aliases, all manifest contribution lists, and any
+adapter compatibility rows, so presentation-only packages remain visible.
 
 Exit codes distinguish usage (1), diagnostics and file-read failures (2),
 invalid plans (3), missing confirmation (4), apply failure (5), and
