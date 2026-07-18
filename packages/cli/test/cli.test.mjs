@@ -151,6 +151,30 @@ test("filesystem selectors emit nested files once after the source walk", async 
     );
   }));
 
+test("selectors cross filesystem mount boundaries without losing adapter schemas", async () =>
+  fixture(async (root) => {
+    const fixtures = [
+      { extension: "json", content: '{"value":1}\n', mount: "json", kind: "json::root" },
+      { extension: "md", content: "# Title\n", mount: "markdown", kind: "markdown::document" },
+      { extension: "ts", content: "call();\n", mount: "ts", kind: "ts::source-file" },
+    ];
+    await Promise.all(fixtures.map(async ({ extension, content }) => {
+      await writeFile(join(root, `input.${extension}`), content);
+    }));
+    for (const { extension, mount, kind } of fixtures) {
+      const program = [
+        `from fs({ uri: ${JSON.stringify(root)}, include: ["**/*.${extension}"], kinds: ["fs::file"] })`,
+        `| mount ${mount}()`,
+        `| select 'fs::file > ${kind}'`,
+        "| count",
+      ].join("\n");
+      // oxlint-disable-next-line no-await-in-loop -- each mount owns sequential fixture I/O.
+      const result = await run(["query", "--expr", program]);
+      assert.equal(result.code, 0, `${mount}: ${result.stderr}`);
+      assert.equal(JSON.parse(result.stdout).value, 1);
+    }
+  }));
+
 test("plan previews cannot apply and saved destructive plans require acknowledgements", async () =>
   fixture(async (root) => {
     const source = join(root, "code.ts");

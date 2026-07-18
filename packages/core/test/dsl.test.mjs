@@ -223,32 +223,43 @@ test("filesystem stream selectors match an explicitly scoped TypeScript query", 
       include: ["**/*.json"],
       kinds: ["fs::file"],
     });
-    const mountedTextual = compileDsl(
-      `from fs({ uri: ${JSON.stringify(root)} }) | mount json() | select 'json::scalar'`,
-      {
-        sources: {
-          fs: {
-            adapter: filesystem,
-            selectorSource: "selection",
-            arguments: {
-              uri: { type: "string", cardinality: "one", required: true },
-            },
-            open: jsonSource,
+    const mountedEnvironment = {
+      sources: {
+        fs: {
+          adapter: filesystem,
+          selectorSource: "selection",
+          arguments: {
+            uri: { type: "string", cardinality: "one", required: true },
           },
-        },
-        mounts: {
-          json: {
-            adapter: json,
-            arguments: {},
-            mount: (query) => mountJson(query, json),
-          },
+          open: jsonSource,
         },
       },
+      mounts: {
+        json: {
+          adapter: json,
+          arguments: {},
+          mount: (query) => mountJson(query, json),
+        },
+      },
+    };
+    const filesOnly = compileDsl(
+      `from fs({ uri: ${JSON.stringify(root)} }) | mount json() | select 'fs::file'`,
+      mountedEnvironment,
+    );
+    assert.equal(filesOnly.kind, "query");
+    assert.equal(json.statistics().filesRead, 0);
+    assert.equal((await filesOnly.query.toArray()).length, 2);
+    assert.equal(json.statistics().filesRead, 0);
+
+    const mountedSelector = "fs::file > json::root json::scalar";
+    const mountedTextual = compileDsl(
+      `from fs({ uri: ${JSON.stringify(root)} }) | mount json() | select '${mountedSelector}'`,
+      mountedEnvironment,
     );
     const mountedProgrammatic = selectFrom(
       mountJson(jsonSource(), json),
-      json.schema,
-      "json::scalar",
+      [filesystem.schema, json.schema],
+      mountedSelector,
     );
     assert.equal(mountedTextual.kind, "query");
     assert.deepEqual(
@@ -256,6 +267,30 @@ test("filesystem stream selectors match an explicitly scoped TypeScript query", 
       [2, 1],
     );
     assert.deepEqual(mountedTextual.query.explain(), mountedProgrammatic.explain());
+    assert.match(JSON.stringify(mountedTextual.query.explain()), /fs -> json/);
+
+    for (const [selectorSource, code, schema, fragment] of [
+      ["fs::missing > json::root", "selector.unknown-kind", "schema fs", "fs::missing"],
+      ["fs::file ->json::missing json::root", "selector.unknown-edge", "schema json", "json::missing"],
+      ["fs::file > json::root[missing = 1]", "selector.unknown-attribute", "schema json", "missing = 1"],
+    ]) {
+      const sourceText = `from fs({ uri: ${JSON.stringify(root)} }) | mount json() | select '${selectorSource}'`;
+      assert.throws(
+        () => compileDsl(
+          sourceText,
+          mountedEnvironment,
+          { uri: "mounted.dsl" },
+        ),
+        (error) => {
+          assert.equal(error instanceof DslError, true);
+          assert.equal(error.diagnostics[0].code, code);
+          assert.match(error.diagnostics[0].message, new RegExp(schema));
+          const range = error.diagnostics[0].locations[0].range;
+          assert.match(sourceText.slice(range.start, range.end), new RegExp(fragment));
+          return true;
+        },
+      );
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -423,6 +423,17 @@ proven declarations; it is never treated as a child edge. One cached language
 service supplies all files in a project. Without a configured project, files
 remain queryable in syntax-only mode and expose no invented symbol edges.
 
+Selector compilation over a mount carries an ordered composite of the
+container and mounted schemas. Fully namespaced kinds, attributes, named edges,
+and explicit tree views continue to resolve against their owning schema; the
+composite is an execution view, not a merged adapter contract. Its default
+containment traversal is the ordered union of each adapter's declared default
+child edges, including the mount edge. A selector beginning with the containing
+kind anchors on the existing container selection, so compilation and a filter
+such as `fs::file` do not request the mount edge. Traversal crosses adapters
+only when a combinator requires it, preserving lazy opening and balanced close,
+failure, cancellation, and early-return behavior.
+
 ### 7.3 Adapter-specific operations
 
 Adapters publish typed operations such as:
@@ -465,6 +476,11 @@ names it defines, permits at most one default tree view, and cannot contain
 duplicate definitions. Static schemas use `dynamic: false`. Runtime-loaded
 plugin schemas use the explicit `dynamic: true` escape hatch but remain subject
 to the same runtime structural and namespace validation.
+
+`selectFrom` accepts either one adapter schema or an ordered schema list for a
+mounted graph. Composite validation never grants one adapter ownership of
+another adapter's names: unknown kinds, edges, and attributes identify the
+responsible namespace schema and retain the selector token's source range.
 
 ## 9. Selector language
 
@@ -629,11 +645,13 @@ joins from the existing query algebra.
 `invoke` must be followed immediately by terminal `plan`. Source, mount, and
 operation names are resolved only through an explicit compile environment.
 Every source resolver declares whether it returns resource roots or a
-preselected stream. A mount begins a new rooted graph for its target adapter;
-therefore a selector after `mount` traverses the mounted tree, while a selector
-directly after the built-in recursive filesystem source matches the walked
-stream as-is. The TypeScript `selectFrom` API exposes the same choice through
-`sourceMode`, so textual and programmatic queries retain identical plans.
+preselected stream. A mount extends that stream with an ordered container-to-
+mounted schema chain. A target-prefixed selector traverses the composite
+mounted tree, while a container-prefixed selector anchors on the walked stream
+and crosses the mount only through an explicit combinator. The TypeScript
+`selectFrom` API accepts the same schema chain and exposes root-versus-selection
+choice through `sourceMode`, so textual and programmatic queries retain
+identical plans.
 Source resolvers and mounts also publish one serializable named-argument schema.
 Each field declares its scalar type, `one` or `many` cardinality, whether it is
 required, and optional default, allowed choices, and sensitivity. Compilation
@@ -741,6 +759,10 @@ depend on accurate estimates.
 Execution uses `AsyncIterable` semantics and honors backpressure. Cancellation
 propagates to adapters. Resources MUST be closed when a query completes, fails,
 or is cancelled.
+
+Logical and physical selector explanations label ordered adapter transitions
+such as `fs -> json`; the transition is descriptive and does not imply shared
+adapter capabilities or pushdown across the mount boundary.
 
 The SQL prototype's `fromSqlRows` source accepts a serializable table,
 predicate, projection, ordering, aggregation, inner-equality-join, offset, and

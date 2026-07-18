@@ -287,10 +287,13 @@ neither cross-resource atomicity nor post-commit reversibility.
 over the same `Query`, selector, operation, and change-plan values used by the
 TypeScript API. A compile environment explicitly supplies named sources, mounts,
 and adapter operation constructors. Each source declares `selectorSource` as
-`"roots"` or `"selection"`; mounts establish a new rooted graph for the mounted
-adapter. The built-in filesystem source is a preselected recursive walk, so a
-following selector filters its rows once while preserving explicit bag
-semantics.
+`"roots"` or `"selection"`; mounts carry an ordered container/mounted schema
+chain. Fully namespaced selector steps resolve against their owning adapter
+while child traversal can cross the declared mount edge. The built-in
+filesystem source is a preselected recursive walk, so a container-prefixed
+selector filters its rows without opening mounted resources;
+`fs::file > json::root` opens JSON lazily only at the child step. Explanations
+label transitions such as `fs -> json`.
 
 ```text
 from ts({ uri: "src/index.ts" })

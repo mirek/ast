@@ -238,6 +238,7 @@ export type {
   SelectorProgram,
   SelectorPseudo,
   SelectorRegularExpression,
+  SelectorSchema,
   SelectorSequence,
   SelectorSourceMode,
   SelectorStep,

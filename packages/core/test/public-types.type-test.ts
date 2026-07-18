@@ -150,7 +150,12 @@ void filesystemChangeKind;
 const jsonValue: JsonValue = { name: "ast", values: [true, null, 1] };
 const json = createJsonAdapter();
 const mountedJson = mountJson(filesystemQuery, json);
-void mountedJson;
+const mountedJsonSelection = selectFrom(
+  mountedJson,
+  [createFilesystemAdapter().schema, json.schema],
+  "fs::file > json::root",
+);
+void mountedJsonSelection;
 
 declare const jsonNode: NodeSnapshot;
 const jsonOperation = jsonReplaceValue(jsonNode, jsonValue);
