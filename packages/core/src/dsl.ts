@@ -8,6 +8,7 @@ import type { NamespacedName, Scalar, SourceRange } from "./model.js";
 import type { CaptureMap, NavigableNodeHandle, Query } from "./query.js";
 import type { AdapterSchema, Cardinality, ScalarType } from "./schema.js";
 import { SelectorError, selectFrom } from "./selector.js";
+import type { SelectorExtensionPredicate } from "./selector.js";
 import type { SelectorSourceMode } from "./selector.js";
 
 export interface DslOptions { readonly uri?: string; }
@@ -22,6 +23,12 @@ export interface DslArgumentDefinition {
 }
 export type DslArgumentSchema = Readonly<Record<string, DslArgumentDefinition>>;
 export type DslArguments = Readonly<Record<string, DslArgumentValue>>;
+export interface DslScalarFunction {
+  readonly name: NamespacedName;
+  readonly parameters: readonly ScalarType[];
+  readonly returns: ScalarType;
+  call(args: readonly Scalar[]): Scalar;
+}
 export interface DslEnvironment {
   readonly sources: Readonly<Record<string, {
     readonly adapter: Adapter;
@@ -44,6 +51,8 @@ export interface DslEnvironment {
     readonly arguments?: DslArgumentSchema;
     create(target: NavigableNodeHandle, args: DslArguments): Operation;
   }>>;
+  readonly predicates?: Readonly<Record<string, SelectorExtensionPredicate>>;
+  readonly functions?: Readonly<Record<string, DslScalarFunction>>;
 }
 
 export interface DslExpression { readonly source: string; readonly range: SourceRange; }
@@ -578,7 +587,14 @@ const property = (value: unknown, path: readonly string[]): unknown => {
   return current;
 };
 
-const expressionValue = (expression: string, value: unknown, captures: CaptureMap, program: DslProgram, range: SourceRange): unknown => {
+const expressionValue = (
+  expression: string,
+  value: unknown,
+  captures: CaptureMap,
+  program: DslProgram,
+  range: SourceRange,
+  functions: Readonly<Record<string, DslScalarFunction>> = {},
+): unknown => {
   const source = expression.trim();
   if (source.startsWith("@")) return property(value, source.slice(1).split("."));
   if (source.startsWith("$")) {
@@ -588,6 +604,28 @@ const expressionValue = (expression: string, value: unknown, captures: CaptureMa
       return property(value[name === "left" ? 0 : 1], path);
     }
     return property(captures[name ?? ""], path);
+  }
+  const call = /^([A-Za-z][A-Za-z0-9_-]*(?:::[A-Za-z][A-Za-z0-9_-]*)?)\((.*)\)$/us.exec(source);
+  if (call !== null) {
+    const extension = functions[call[1] ?? ""];
+    if (extension === undefined) return fail(program, "dsl.unknown-function", `Unknown scalar function ${JSON.stringify(call[1])}.`, range);
+    const body = call[2] ?? "";
+    const args = body.trim().length === 0
+      ? []
+      : splitTopLevel(body, 0, body.length, ",").map((part) =>
+          expressionValue(part.text, value, captures, program, range, functions));
+    if (
+      args.length !== extension.parameters.length ||
+      args.some((entry, index) => !isScalar(entry) || scalarKind(entry) !== extension.parameters[index])
+    ) return fail(program, "dsl.function-arguments", `Scalar function ${extension.name} received ill-typed arguments.`, range);
+    try {
+      const result: unknown = extension.call(args as Scalar[]);
+      if (result instanceof Promise) throw new TypeError("Scalar functions must be synchronous.");
+      if (!isScalar(result) || scalarKind(result) !== extension.returns) throw new TypeError(`Scalar function must return ${extension.returns}.`);
+      return result;
+    } catch (error) {
+      return fail(program, "plugin.query-extension-failed", `Scalar function ${extension.name} failed: ${error instanceof Error ? error.message : "unknown failure"}`, range);
+    }
   }
   return literal(source, program, range);
 };
@@ -665,7 +703,7 @@ const validateWhereType = (
   if (adapter === undefined) return;
   const left = condition[1]?.trim() ?? "";
   const right = condition[3]?.trim() ?? "";
-  if (!/^@[A-Za-z][A-Za-z0-9_-]*$/u.test(left) || right.startsWith("@") || right.startsWith("$")) return;
+  if (!/^@[A-Za-z][A-Za-z0-9_-]*$/u.test(left) || right.startsWith("@") || right.startsWith("$") || right.includes("(")) return;
   const attribute = left.slice(1);
   const definitions = adapter.schema.kinds.flatMap(({ attributes }) => attributes[attribute] ?? []);
   if (definitions.length === 0) return fail(program, "dsl.unknown-attribute", `Unknown attribute ${JSON.stringify(attribute)}.`, step.range);
@@ -750,6 +788,7 @@ const compilePipeline = (
               uri: program.uri,
               sourceMode: state.selectorSource ?? "roots",
               ...(state.treeView === undefined ? {} : { treeView: state.treeView }),
+              ...(environment.predicates === undefined ? {} : { predicates: environment.predicates }),
             },
           ) as Query<unknown, CaptureMap>,
           adapter: state.adapter,
@@ -773,11 +812,11 @@ const compilePipeline = (
         ...state,
         query: state.query.filter((value, captures) => {
           if (nullMatch !== null) {
-            const selected = expressionValue(nullMatch[1] ?? "", value, captures, program, step.range);
+            const selected = expressionValue(nullMatch[1] ?? "", value, captures, program, step.range, environment.functions);
             return nullMatch[2] === "null" ? selected === null : selected === undefined;
           }
-          const left = expressionValue(comparison?.[1] ?? "", value, captures, program, step.range);
-          const right = expressionValue(comparison?.[3] ?? "", value, captures, program, step.range);
+          const left = expressionValue(comparison?.[1] ?? "", value, captures, program, step.range, environment.functions);
+          const right = expressionValue(comparison?.[3] ?? "", value, captures, program, step.range, environment.functions);
           const operator = comparison?.[2];
           if (operator === "=") return typeof left === typeof right && left === right;
           if (operator === "!=") return typeof left !== typeof right || left !== right;
@@ -795,8 +834,16 @@ const compilePipeline = (
     }
     if (step.kind === "project") {
       const fields = parseProjection(step, program);
+      const called = fields.flatMap(({ expression }) => {
+        const name = /^\s*([A-Za-z][A-Za-z0-9_-]*(?:::[A-Za-z][A-Za-z0-9_-]*)?)\(/u.exec(expression)?.[1];
+        const canonical = name === undefined ? undefined : environment.functions?.[name]?.name;
+        return canonical === undefined ? [] : [canonical];
+      });
       state = {
-        query: state.query.project((value, captures) => Object.fromEntries(fields.map(({ name, expression }) => [name, expressionValue(expression, value, captures, program, step.range)])), "dsl project") as Query<unknown, CaptureMap>,
+        query: state.query.project(
+          (value, captures) => Object.fromEntries(fields.map(({ name, expression }) => [name, expressionValue(expression, value, captures, program, step.range, environment.functions)])),
+          ["dsl project", ...called.map((name) => `plugin ${name}`)].join("; "),
+        ) as Query<unknown, CaptureMap>,
       };
       continue;
     }
@@ -835,8 +882,8 @@ const compilePipeline = (
       if (right === undefined || right.invocation !== undefined) return fail(program, "dsl.unknown-binding", `Unknown query binding ${JSON.stringify(match[1])}.`, step.range);
       state = {
         query: state.query.join(right.query, {
-          leftKey: (value) => expressionValue(match[2] ?? "", value, {}, program, step.range),
-          rightKey: (value) => expressionValue(match[3] ?? "", value, {}, program, step.range),
+          leftKey: (value) => expressionValue(match[2] ?? "", value, {}, program, step.range, environment.functions),
+          rightKey: (value) => expressionValue(match[3] ?? "", value, {}, program, step.range, environment.functions),
           label: "dsl join",
         }) as Query<unknown, CaptureMap>,
       };

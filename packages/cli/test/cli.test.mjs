@@ -621,15 +621,15 @@ test("explicitly allowlisted plugins load as trusted code and enforce powers bef
       "const schema = { namespace: 'example', version: '1.0.0', dynamic: true, kinds: [{ kind: 'example::item', attributes: { index: { scalar: 'number', cardinality: 'one', required: true } }, identity: { stability: 'observation', description: 'Fixture item index.' } }], edges: [], operations: [], treeViews: [{ name: 'example::tree', rootKinds: ['example::item'], childEdges: [], default: true }], capabilities: { traversal: ['tree'], pushdown: [], ordering: 'stable', revisions: false, transactions: 'none' } };",
       "const adapter = { contractVersion: '1', namespace: 'example', schema, read: { open: async (source) => ({ resource: { id: 'fixture', adapter: 'example', uri: source.uri }, close: async () => {} }), roots: async function* (resource) { for (let index = 0; index < 3; index += 1) yield { id: { adapter: 'example', resource: resource.id, local: String(index) }, kind: 'example::item', attributes: { index } }; }, edges: async function* () {}, hydrate: async () => [] } };",
       "export default {",
-      "  manifest: { apiVersion: '1', name: '@example/ast-plugin', version: '1.0.0', integrity: 'sha256:fixture-1', namespaces: ['example'], powers: ['resource:read'], contributions: { adapters: ['example'], schemas: ['example'], resolvers: ['example::source'], mounts: [], operations: [], predicates: [], functions: [], renderers: [], diffProviders: [], optimizerRules: [] } },",
-      "  contributions: { adapters: [adapter], schemas: [schema], resolvers: [{ name: 'example::source', adapter, selectorSource: 'roots', arguments: {}, open: () => fromAdapter(adapter, { uri: 'example:fixture' }) }] },",
+      "  manifest: { apiVersion: '1', name: '@example/ast-plugin', version: '1.0.0', integrity: 'sha256:fixture-1', namespaces: ['example'], powers: ['resource:read'], contributions: { adapters: ['example'], schemas: ['example'], resolvers: ['example::source'], mounts: [], operations: [], predicates: ['example::at-least'], functions: ['example::twice'], renderers: [], diffProviders: [], optimizerRules: [] } },",
+      "  contributions: { adapters: [adapter], schemas: [schema], resolvers: [{ name: 'example::source', adapter, selectorSource: 'roots', arguments: {}, open: () => fromAdapter(adapter, { uri: 'example:fixture' }) }], predicates: [{ name: 'example::at-least', parameters: ['number'], test: (node, [minimum]) => { if (minimum === 99) throw new Error('predicate failed'); return node.attributes.index >= minimum; } }], functions: [{ name: 'example::twice', parameters: ['number'], returns: 'number', call: ([value]) => value * 2 }] },",
       "};",
     ].join("\n"));
     const entry = {
       specifier: plugin,
       name: "@example/ast-plugin",
       powers: ["resource:read"],
-      aliases: { namespaces: { ex: "example" }, sources: { demo: "example::source" } },
+      aliases: { namespaces: { ex: "example" }, sources: { demo: "example::source" }, predicates: { minimum: "example::at-least" }, functions: { twice: "example::twice" } },
     };
     await writeFile(config, JSON.stringify({ format: "jsonl", plugins: [entry] }));
 
@@ -642,6 +642,21 @@ test("explicitly allowlisted plugins load as trusted code and enforce powers bef
     const queried = await run(["query", "--expr", "from demo() | count", "--config", config]);
     assert.equal(queried.code, 0);
     assert.equal(JSON.parse(queried.stdout).value, 3);
+    const extended = await run(["query", "--expr", "from demo() | select 'example::item:minimum(1)' | project { doubled: twice(@index) } | sort doubled", "--config", config]);
+    assert.equal(extended.code, 0, extended.stderr);
+    assert.deepEqual(extended.stdout.trim().split("\n").map(JSON.parse).map(({ value }) => value.doubled), [2, 4]);
+    for (const [program, code] of [
+      ["from demo() | select 'example::item:missing(1)'", "selector.unknown-predicate"],
+      ["from demo() | select 'example::item:minimum(\"bad\")'", "selector.predicate-arguments"],
+      ["from demo() | project { value: missing(@index) }", "dsl.unknown-function"],
+      ["from demo() | select 'example::item:minimum(99)'", "plugin.query-extension-failed"],
+    ]) {
+      // oxlint-disable-next-line no-await-in-loop -- each diagnostic is isolated.
+      const failure = await run(["query", "--expr", program, "--config", config]);
+      assert.equal(failure.code, 2);
+      assert.match(failure.stderr, new RegExp(code.replace(".", "\\.")));
+      assert.equal(JSON.parse(failure.stderr).value.locations[0].uri, "argv:program");
+    }
     const schema = await run(["schema", "ex", "--config", config]);
     assert.equal(JSON.parse(schema.stdout).namespace, "example");
 

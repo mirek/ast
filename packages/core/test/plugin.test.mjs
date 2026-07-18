@@ -100,8 +100,17 @@ const moduleFor = (manifestValue = manifest()) => {
           payload: {},
         }),
       }],
-      predicates: [{ name: "example::truthy", test: (value) => Boolean(value) }],
-      functions: [{ name: "example::identity", call: ([value]) => value }],
+      predicates: [{
+        name: "example::truthy",
+        parameters: ["string"],
+        test: (value, [attribute]) => Boolean(value.attributes[attribute]),
+      }],
+      functions: [{
+        name: "example::identity",
+        parameters: ["string"],
+        returns: "string",
+        call: ([value]) => value,
+      }],
       renderers: [{ name: "example::text", render: (value) => String(value) }],
       diffProviders: [{ name: "example::diff", render: (before, after) => `${before} -> ${after}` }],
       optimizerRules: [{ name: "example::identity-rule", equivalence: "identity" }],
@@ -140,7 +149,7 @@ test("plugin registration validates manifests and exposes only explicit aliases"
   assert.deepEqual(registry.mounts["example::mount"].arguments, {});
   assert.equal(registry.dslEnvironment.sources.demo.adapter, registry.adapters[0]);
   assert.equal((await registry.dslEnvironment.sources.demo.open({}).toArray()).length, 2);
-  assert.equal(registry.predicates["example::truthy"].test(1, []), true);
+  assert.equal(registry.predicates["example::truthy"].test({ attributes: { name: "demo" } }, ["name"]), true);
   assert.equal(registry.optimizerRules["example::identity-rule"].equivalence, "identity");
 });
 
