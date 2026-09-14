@@ -267,3 +267,61 @@ test("type-only re-export chains preserve erasure and explicit value routes", as
   await inspect("mixed.ts", false);
   await inspect("mixed-star.ts", false);
 }));
+
+test("merged declaration names retain aggregate value status and first-declaration metadata", async () => fixture(async (root) => {
+  await writeFile(join(root, "class-first.ts"), 'export class Foo {}\nexport interface Foo { value?: number }\nexport { Foo as Alias };\n');
+  await writeFile(join(root, "interface-first.ts"), 'export interface Foo { value?: number }\nexport class Foo {}\nexport { Foo as Alias };\n');
+  await writeFile(join(root, "types-only.ts"), 'export interface Foo { value?: number }\nexport interface Foo { other?: string }\nexport { Foo as Alias };\n');
+  await Promise.all([{}, { project: join(root, "tsconfig.json") }].map(async options => {
+    const adapter = createTypeScriptAdapter(options);
+    const inspect = async (file, typeOnly, kind) => {
+      const handle = await adapter.read.open({ uri: join(root, file) }, {});
+      try {
+        const info = await adapter.moduleInfo(handle.resource);
+        assert.deepEqual(info.exports.map(item => item.name), ["Foo", "Alias"]);
+        for (const item of info.exports) {
+          assert.equal(item.typeOnly, typeOnly, `${info.mode}: ${file}: ${item.name}`);
+          assert.equal(item.declarationKind, kind, `${info.mode}: ${file}: ${item.name}`);
+        }
+      } finally { await handle.close(); }
+    };
+    await inspect("class-first.ts", false, "ClassDeclaration");
+    await inspect("interface-first.ts", false, "InterfaceDeclaration");
+    await inspect("types-only.ts", true, "InterfaceDeclaration");
+  }));
+}));
+
+test("default identifier exports retain their local declaration and JSDoc", async () => fixture(async (root) => {
+  await writeFile(join(root, "value.ts"), '/** Default API. */ const api = 1;\nexport default api;\n');
+  await writeFile(join(root, "type.ts"), '/** Default shape. */ interface Shape {}\nexport default Shape;\n');
+  await Promise.all([{}, { project: join(root, "tsconfig.json") }].map(async options => {
+    const adapter = createTypeScriptAdapter(options);
+    const inspect = async (file, localName, typeOnly, doc) => {
+      const handle = await adapter.read.open({ uri: join(root, file) }, {});
+      try {
+        const item = (await adapter.moduleInfo(handle.resource)).exports[0];
+        assert.equal(item.name, "default");
+        assert.equal(item.localName, localName);
+        assert.equal(item.typeOnly, typeOnly);
+        assert.match(item.documentation, doc);
+      } finally { await handle.close(); }
+    };
+    await inspect("value.ts", "api", false, /Default API/);
+    await inspect("type.ts", "Shape", true, /Default shape/);
+  }));
+}));
+
+test("export-equals keeps explicitly imported type-only aliases erased", async () => fixture(async (root) => {
+  await writeFile(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions: { module: "nodenext" }, include: ["*.cts"] }));
+  await writeFile(join(root, "api.cts"), "class API {}\nexport = API;\n");
+  await writeFile(join(root, "index.cts"), 'import type API = require("./api.cjs");\nexport = API;\n');
+  await Promise.all([{}, { project: join(root, "tsconfig.json") }].map(async options => {
+    const adapter = createTypeScriptAdapter(options);
+    const handle = await adapter.read.open({ uri: join(root, "index.cts") }, {});
+    try {
+      const item = (await adapter.moduleInfo(handle.resource)).exports[0];
+      assert.equal(item.name, "export=");
+      assert.equal(item.typeOnly, true);
+    } finally { await handle.close(); }
+  }));
+}));

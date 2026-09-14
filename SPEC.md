@@ -1255,7 +1255,10 @@ declarations inherit their statement's JSDoc through the compiler API.
 Type-only wildcard re-exports do not turn an exported class into a value export.
 Default interfaces are type-only in both modes. Local export clauses retain
 type-only imported bindings, including default, namespace, and named imports.
-Exported type-only import-equals aliases remain type-only in both modes.
+Exported type-only import-equals aliases remain type-only in both modes,
+including aliases subsequently re-exported through `export =`.
+Default identifier exports reuse a known local declaration, including its JSDoc
+and aggregate type/value status.
 Named default declarations use their declaration name as `localName`, not the
 compiler's synthetic `default` export name; anonymous defaults omit it.
 Namespace re-exports also omit localName, rather than exposing an internal
@@ -1264,7 +1267,10 @@ expansion of the assigned class's static members. Every declarator in a
 documented variable statement inherits its statement's JSDoc when it lacks
 its own blocks. Binding elements walk through nested object/array patterns to
 their variable declaration and statement when inheriting JSDoc. Empty namespaces
-and namespaces containing only types remain type-only in both modes.
+and namespaces containing only types remain type-only in both modes. Merged
+declaration names use their aggregate compiler symbol for value/type status;
+a following interface cannot erase a class value. Metadata and local alias
+origins retain the first declaration, matching configured mode.
 Type-only module exports remain type-only through named and wildcard re-export
 chains and local imported aliases. The inventory follows captured compiler
 symbols and authored export routes, detects cycles, gives explicit exports
@@ -1275,7 +1281,7 @@ Syntax-only analysis lists directly declared exports, exported import-equals
 declarations, and explicit export clauses,
 and infers TSX/JSX syntax from the source extension through the compiler,
 including local aliases, but does not expand wildcard re-exports or invent
-module resolution. Namespace value/type classification uses a lazy cached
+module resolution. Interface/namespace value/type classification uses a lazy cached
 single-file compiler binder backed only by the observed source, with no disk
 reads or dependency resolution. This program contributes to the adapter
 programsCreated statistic. Files outside the configured project use this latter mode.

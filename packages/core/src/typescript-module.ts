@@ -67,7 +67,10 @@ const declarationNames = (statement: ts.Statement): readonly { name: string; nod
 };
 
 /** Follow authored export routes using only the captured compiler graph. */
-const typeOnlyResolver = (checker: ts.TypeChecker): ((source: ts.SourceFile, name: string) => boolean | undefined) => {
+const typeOnlyResolver = (checker: ts.TypeChecker): {
+  readonly exported: (source: ts.SourceFile, name: string) => boolean | undefined;
+  readonly symbol: (symbol: ts.Symbol) => boolean | undefined;
+} => {
   const tables = new Map<ts.SourceFile, ReadonlyMap<string, ts.Symbol>>();
   const active = new Map<ts.SourceFile, Set<string>>();
   const aliases = new Set<ts.Symbol>();
@@ -146,7 +149,7 @@ const typeOnlyResolver = (checker: ts.TypeChecker): ((source: ts.SourceFile, nam
       return routes.length ? routes.every(Boolean) : symbolTypeOnly(symbol);
     } finally { names.delete(name); }
   };
-  return exported;
+  return { exported, symbol: symbolTypeOnly };
 };
 
 /** Internal compiler projection shared by syntax-only and configured adapters. */
@@ -159,13 +162,16 @@ export const moduleInfoFor = (
 ): TypeScriptModuleInfo => {
   const configuredTypeOnly = checker && typeOnlyResolver(checker);
   const typeOnlyDeclaration = (node: ts.Node): boolean => {
-    if (ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) return true;
-    if (!ts.isModuleDeclaration(node)) return false;
+    if (ts.isTypeAliasDeclaration(node)) return true;
+    if (!ts.isInterfaceDeclaration(node) && !ts.isModuleDeclaration(node)) return false;
     const symbol = (checker ?? syntaxChecker()).getSymbolAtLocation(node.name);
-    return symbol !== undefined && (symbol.flags & ts.SymbolFlags.Value) === 0;
+    return symbol === undefined ? ts.isInterfaceDeclaration(node) : (symbol.flags & ts.SymbolFlags.Value) === 0;
   };
   const imports: TypeScriptModuleImport[] = [];
   const exports = new Map<string, TypeScriptModuleExport>();
+  const addSyntaxExport = (name: string, entry: TypeScriptModuleExport): void => {
+    if (!exports.has(name)) exports.set(name, entry);
+  };
   const explicitExports = new Map<string, boolean>();
   const typeStars = new Set<string>();
   const valueStars = new Set<string>();
@@ -181,7 +187,8 @@ export const moduleInfoFor = (
       }
     } else if (ts.isImportEqualsDeclaration(statement) && statement.isTypeOnly) typeOnlyLocals.add(statement.name.text);
   }
-  const locals = new Map(source.statements.flatMap(declarationNames).map(item => [item.name, item.node]));
+  const locals = new Map<string, ts.Node>();
+  for (const item of source.statements.flatMap(declarationNames)) if (!locals.has(item.name)) locals.set(item.name, item.node);
   const exportEntry = (name: string, node: ts.Node, typeOnly: boolean, localName?: string): TypeScriptModuleExport => {
     const documentation = documentationFor(node);
     return { name, typeOnly, ...(localName === undefined ? {} : { localName }), declarationKind: ts.SyntaxKind[node.kind], origin: originFor(node, resources), ...(documentation === undefined ? {} : { documentation }) };
@@ -222,20 +229,22 @@ export const moduleInfoFor = (
     if (hasModifier(statement, ts.SyntaxKind.ExportKeyword)) {
       const isDefault = hasModifier(statement, ts.SyntaxKind.DefaultKeyword);
       const names = declarationNames(statement);
-      if (isDefault) exports.set("default", exportEntry("default", statement, ts.isInterfaceDeclaration(statement), names[0]?.name));
-      else for (const item of names) exports.set(item.name, exportEntry(item.name, item.node, typeOnlyDeclaration(item.node) || typeOnlyLocals.has(item.name), item.name));
+      if (isDefault) addSyntaxExport("default", exportEntry("default", statement, typeOnlyDeclaration(statement), names[0]?.name));
+      else for (const item of names) addSyntaxExport(item.name, exportEntry(item.name, item.node, typeOnlyDeclaration(item.node) || typeOnlyLocals.has(item.name), item.name));
     }
     if (ts.isExportAssignment(statement)) {
       const name = statement.isExportEquals ? "export=" : "default";
-      exports.set(name, exportEntry(name, statement, false));
+      const localName = ts.isIdentifier(statement.expression) ? statement.expression.text : undefined;
+      const declaration = localName === undefined ? undefined : locals.get(localName);
+      addSyntaxExport(name, exportEntry(name, declaration ?? statement, (localName !== undefined && typeOnlyLocals.has(localName)) || (declaration !== undefined && typeOnlyDeclaration(declaration)), localName));
     }
     if (ts.isExportDeclaration(statement) && statement.exportClause) {
       if (ts.isNamedExports(statement.exportClause)) for (const element of statement.exportClause.elements) {
         const localName = (element.propertyName ?? element.name).text;
         const declaration = statement.moduleSpecifier ? undefined : locals.get(localName);
-        exports.set(element.name.text, exportEntry(element.name.text, declaration ?? element, statement.isTypeOnly || element.isTypeOnly || (!statement.moduleSpecifier && typeOnlyLocals.has(localName)) || (declaration !== undefined && typeOnlyDeclaration(declaration)), localName));
+        addSyntaxExport(element.name.text, exportEntry(element.name.text, declaration ?? element, statement.isTypeOnly || element.isTypeOnly || (!statement.moduleSpecifier && typeOnlyLocals.has(localName)) || (declaration !== undefined && typeOnlyDeclaration(declaration)), localName));
       }
-      else exports.set(statement.exportClause.name.text, exportEntry(statement.exportClause.name.text, statement.exportClause, statement.isTypeOnly));
+      else addSyntaxExport(statement.exportClause.name.text, exportEntry(statement.exportClause.name.text, statement.exportClause, statement.isTypeOnly));
     }
   }
   const moduleSymbol = checker?.getSymbolAtLocation(source);
@@ -246,7 +255,9 @@ export const moduleInfoFor = (
     const target = symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0 ? checker?.getAliasedSymbol(symbol) : symbol;
     const declaration = target?.declarations?.[0] ?? (ts.isIdentifier(expression) ? locals.get(expression.text) : undefined) ?? exportEquals;
     exports.clear();
-    exports.set("export=", exportEntry("export=", declaration, typeOnlyDeclaration(declaration), ts.isIdentifier(expression) ? expression.text : undefined));
+    const explicitType = ts.isIdentifier(expression) && typeOnlyLocals.has(expression.text);
+    const typeOnly = explicitType || ((symbol === undefined ? undefined : configuredTypeOnly?.symbol(symbol)) ?? typeOnlyDeclaration(declaration));
+    exports.set("export=", exportEntry("export=", declaration, typeOnly, ts.isIdentifier(expression) ? expression.text : undefined));
   }
   if (!exportEquals && checker && moduleSymbol) for (const symbol of checker.getExportsOfModule(moduleSymbol)) {
     const target = (symbol.flags & ts.SymbolFlags.Alias) !== 0 ? checker.getAliasedSymbol(symbol) : symbol;
@@ -255,7 +266,7 @@ export const moduleInfoFor = (
     const explicitType = explicitExports.get(symbol.name) ?? (typeStars.has(symbol.name) && !valueStars.has(symbol.name));
     const declaredName = (declaration as ts.NamedDeclaration).name;
     const localName = declaredName && ts.isIdentifier(declaredName) ? declaredName.text : undefined;
-    const typeOnly = configuredTypeOnly?.(source, symbol.name) ?? (explicitType || (target.flags & ts.SymbolFlags.Value) === 0);
+    const typeOnly = configuredTypeOnly?.exported(source, symbol.name) ?? (explicitType || (target.flags & ts.SymbolFlags.Value) === 0);
     exports.set(symbol.name, exportEntry(symbol.name, declaration, typeOnly, localName));
   }
   return immutableCopy({ resource, mode: checker === undefined ? "syntax-only" : "configured-project", imports, exports: [...exports.values()] });

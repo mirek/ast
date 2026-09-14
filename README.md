@@ -296,6 +296,7 @@ declaration and its JSDoc, including variable-statement documentation. Type-only
 imports and re-exports remain distinguishable. Default interfaces and local re-exports
 of type-only imports retain their type-only status in both modes. Named default
 exports keep their declaration's local name; anonymous defaults omit it.
+Default identifier exports reuse known local declarations and their JSDoc.
 Namespace re-exports omit local names too. CommonJS export assignment appears
 as one `export=` entry, and all declarators in a documented variable statement
 inherit its JSDoc unless they have their own blocks. This includes nested
@@ -317,7 +318,9 @@ explicit exports, exported import-equals declarations and local export aliases; 
 expand wildcard re-exports. `mode` states this distinction on each result.
 Exports appear in compiler export-table order in project mode and source order
 in syntax-only mode. Empty or type-only namespaces remain type-only in both
-modes. Syntax-only namespace classification lazily caches a single-file compiler
+modes. Merged names use their aggregate symbol for value/type status and keep
+the first declaration as their metadata source, including local export aliases.
+Syntax-only interface/namespace classification lazily caches a single-file compiler
 binder with an in-memory host; it does not read or resolve dependencies. Its
 program is included in `statistics().programsCreated`. Imports remain in source
 order, including duplicates.
