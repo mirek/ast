@@ -150,14 +150,16 @@ const typeOnlyResolver = (checker: ts.TypeChecker): {
           (ts.isExportAssignment(statement) && !statement.isExportEquals && name === "default")) return symbolTypeOnly(symbol);
       }
       const routes: boolean[] = [];
+      let hasWildcardRoute = false;
       for (const statement of statements) {
         if (!ts.isExportDeclaration(statement) || statement.exportClause || !statement.moduleSpecifier || name === "default") continue;
         const remote = moduleSymbol(statement.moduleSpecifier);
         if (!remote || !table(remote).has(name)) continue;
+        hasWildcardRoute = true;
         const route = statement.isTypeOnly ? true : exported(remote, name);
         if (route !== undefined) routes.push(route);
       }
-      return routes.length ? routes.every(Boolean) : symbolTypeOnly(symbol);
+      return routes.length ? routes.every(Boolean) : hasWildcardRoute ? undefined : symbolTypeOnly(symbol);
     } finally { names.delete(name); }
   };
   return {

@@ -263,13 +263,18 @@ test("type-only re-export chains preserve erasure and explicit value routes", as
   await writeFile(join(root, "mixed-star.ts"), 'export * from "./named.js"; export * from "./origin.js";\n');
   await writeFile(join(root, "cycle-a.ts"), 'export * from "./cycle-b.js";\n');
   await writeFile(join(root, "cycle-b.ts"), 'export * from "./cycle-a.js"; export type { Foo } from "./origin.js";\n');
+  await writeFile(join(root, "cycle-star-a.ts"), 'export * from "./cycle-star-b.js"; export type * from "./origin.js";\n');
+  await writeFile(join(root, "cycle-star-b.ts"), 'export * from "./cycle-star-a.js";\n');
+  await writeFile(join(root, "cycle-value-a.ts"), 'export * from "./cycle-value-b.js"; export * from "./origin.js";\n');
+  await writeFile(join(root, "cycle-value-b.ts"), 'export * from "./cycle-value-a.js";\n');
   const inspect = async (file, expected) => {
     const adapter = createTypeScriptAdapter({ project: join(root, "tsconfig.json") });
     const handle = await adapter.read.open({ uri: join(root, file) }, {});
     try { assert.equal((await adapter.moduleInfo(handle.resource)).exports.find(item => item.name === "Foo").typeOnly, expected, file); }
     finally { await handle.close(); }
   };
-  await Promise.all(["named-chain.ts", "star-chain.ts", "local.ts", "cycle-a.ts"].map(file => inspect(file, true)));
+  await Promise.all(["named-chain.ts", "star-chain.ts", "local.ts", "cycle-a.ts", "cycle-star-a.ts", "cycle-star-b.ts"].map(file => inspect(file, true)));
+  await Promise.all(["cycle-value-a.ts", "cycle-value-b.ts"].map(file => inspect(file, false)));
   await inspect("mixed.ts", false);
   await inspect("mixed-star.ts", false);
 }));
