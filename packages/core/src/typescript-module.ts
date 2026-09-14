@@ -273,7 +273,9 @@ export const moduleInfoFor = (
     const declaration = target.declarations?.[0] ?? symbol.declarations?.[0];
     if (!declaration) continue;
     const explicitType = explicitExports.get(symbol.name) ?? (typeStars.has(symbol.name) && !valueStars.has(symbol.name));
-    const declaredName = ts.isNamespaceExport(declaration) ? undefined : (declaration as ts.NamedDeclaration).name;
+    const declaredName = ts.isNamespaceExport(declaration) ? undefined
+      : ts.isExportSpecifier(declaration) ? declaration.propertyName ?? declaration.name
+      : (declaration as ts.NamedDeclaration).name;
     const localName = declaredName && ts.isIdentifier(declaredName) ? declaredName.text : localExportName(symbol);
     const typeOnly = configuredTypeOnly?.exported(source, symbol.name) ?? (explicitType || (target.flags & ts.SymbolFlags.Value) === 0);
     exports.set(symbol.name, exportEntry(symbol.name, declaration, typeOnly, localName));

@@ -334,6 +334,8 @@ test("anonymous targets retain authored local export bindings without inventing 
   await writeFile(join(root, "factory.ts"), 'import factory from "./anonymous.js"; export default factory;\n');
   await writeFile(join(root, "remote.ts"), 'export * as API from "./api.js"; export { default as factory } from "./anonymous.js";\n');
   await writeFile(join(root, "missing.ts"), 'export * as Missing from "missing-package";\n');
+  await writeFile(join(root, "missing-local.ts"), 'import { Foo } from "missing-package"; export { Foo as Bar };\n');
+  await writeFile(join(root, "missing-remote.ts"), 'export { Foo as Bar } from "missing-package";\n');
   await writeFile(join(root, "equals.ts"), 'export import API = require("./api.js");\n');
   const adapter = createTypeScriptAdapter({ project: join(root, "tsconfig.json") });
   const inspect = async (file) => {
@@ -347,4 +349,6 @@ test("anonymous targets retain authored local export bindings without inventing 
   assert.equal((await inspect("equals.ts"))[0].localName, "API");
   assert.equal((await inspect("remote.ts")).every(item => item.localName === undefined), true);
   assert.equal((await inspect("missing.ts"))[0].localName, undefined);
+  assert.equal((await inspect("missing-local.ts"))[0].localName, "Foo");
+  assert.equal((await inspect("missing-remote.ts"))[0].localName, "Foo");
 }));

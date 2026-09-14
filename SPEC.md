@@ -1263,7 +1263,8 @@ Named default declarations use their declaration name as `localName`, not the
 compiler's synthetic `default` export name; direct anonymous defaults omit it.
 When the resolved target has no declaration name, authored local export
 bindings provide localName, including default identifiers, local export clauses
-and exported import-equals bindings. Direct namespace re-exports (`export * as ns`)
+and exported import-equals bindings. Unresolved named export aliases retain
+their authored source name (`Foo` in `export { Foo as Bar }`). Direct namespace re-exports (`export * as ns`)
 omit localName even when the target is unresolved. CommonJS export assignment is one `export=` entry, never an
 expansion of the assigned class's static members. Every declarator in a
 documented variable statement inherits its statement's JSDoc when it lacks
