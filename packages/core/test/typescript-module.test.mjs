@@ -352,3 +352,26 @@ test("anonymous targets retain authored local export bindings without inventing 
   assert.equal((await inspect("missing-local.ts"))[0].localName, "Foo");
   assert.equal((await inspect("missing-remote.ts"))[0].localName, "Foo");
 }));
+
+
+test("internal import-equals exports retain target type or value status in both modes", async () => fixture(async (root) => {
+  await writeFile(join(root, "index.ts"), `
+namespace NS { export interface Type {} export class Value {} }
+export import TypeAlias = NS.Type;
+export import ValueAlias = NS.Value;
+import LocalType = NS.Type;
+import LocalValue = NS.Value;
+export { LocalType as PublicType, LocalValue as PublicValue };
+export default LocalType;
+`);
+  await Promise.all([{}, { project: join(root, "tsconfig.json") }].map(async options => {
+    const adapter = createTypeScriptAdapter(options);
+    const handle = await adapter.read.open({ uri: join(root, "index.ts") }, {});
+    try {
+      const info = await adapter.moduleInfo(handle.resource);
+      const entries = new Map(info.exports.map(item => [item.name, item]));
+      for (const name of ["TypeAlias", "PublicType", "default"]) assert.equal(entries.get(name).typeOnly, true, `${info.mode}: ${name}`);
+      for (const name of ["ValueAlias", "PublicValue"]) assert.equal(entries.get(name).typeOnly, false, `${info.mode}: ${name}`);
+    } finally { await handle.close(); }
+  }));
+}));

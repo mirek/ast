@@ -172,6 +172,11 @@ export const moduleInfoFor = (
   const configuredTypeOnly = checker && typeOnlyResolver(checker);
   const typeOnlyDeclaration = (node: ts.Node): boolean => {
     if (ts.isTypeAliasDeclaration(node)) return true;
+    if (ts.isImportEqualsDeclaration(node) && !ts.isExternalModuleReference(node.moduleReference)) {
+      const localChecker = checker ?? syntaxChecker();
+      const symbol = localChecker.getSymbolAtLocation(node.name);
+      return symbol !== undefined && (typeOnlyResolver(localChecker).symbol(symbol) ?? false);
+    }
     if (!ts.isInterfaceDeclaration(node) && !ts.isModuleDeclaration(node)) return false;
     const symbol = (checker ?? syntaxChecker()).getSymbolAtLocation(node.name);
     return symbol === undefined ? ts.isInterfaceDeclaration(node) : (symbol.flags & ts.SymbolFlags.Value) === 0;

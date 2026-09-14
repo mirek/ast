@@ -1257,6 +1257,8 @@ Default interfaces are type-only in both modes. Local export clauses retain
 type-only imported bindings, including default, namespace, and named imports.
 Exported type-only import-equals aliases remain type-only in both modes,
 including aliases subsequently re-exported through `export =`.
+Internal import-equals aliases (`import Alias = NS.Member`) use the cached
+checker to retain their target's type/value status in syntax-only mode too.
 Default identifier exports reuse a known local declaration, including its JSDoc
 and aggregate type/value status.
 Named default declarations use their declaration name as `localName`, not the
