@@ -15,6 +15,8 @@ import type { EdgeRequest, NodeId, NodeSnapshot, Resource, Revision, SourceRange
 import type { CaptureMap, NavigableNodeHandle, Query } from "./query.js";
 import { defineAdapterSchema } from "./schema.js";
 import type { NodeKindSchema } from "./schema.js";
+import { moduleInfoFor } from "./typescript-module.js";
+import type { TypeScriptModuleInfo } from "./typescript-module.js";
 
 export type TypeScriptNodeKind = "ts::source-file" | "ts::function" | "ts::class" | "ts::variable" | "ts::call" | "ts::identifier" | "ts::import" | "ts::node";
 export type TypeScriptOperationKind = "ts::rename-symbol" | "ts::replace-call";
@@ -48,6 +50,8 @@ export interface TypeScriptAdapter extends Adapter {
   readonly mount: MountCapability;
   diagnostics(): readonly Diagnostic[];
   statistics(): TypeScriptStatistics;
+  /** Analyze an opened source snapshot; configured projects include compiler resolution. */
+  moduleInfo(resource: Resource, context?: OpenContext): Promise<TypeScriptModuleInfo>;
 }
 
 interface NodeRecord { readonly snapshot: NodeSnapshot; readonly node: ts.Node; readonly children: readonly string[]; readonly parent?: string; }
@@ -139,6 +143,28 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
   let compilerOptions: ts.CompilerOptions = {};
   const versions = new Map<string, string>();
   const syntaxOnlyReported = new Set<string>();
+  const syntaxCheckers = new WeakMap<ts.SourceFile, ts.TypeChecker>();
+  const syntaxCheckerFor = (state: FileState): ts.TypeChecker => {
+    const cached = syntaxCheckers.get(state.sourceFile);
+    if (cached) return cached;
+    // Bind only the observed source. This host never reads dependencies or disk.
+    const sameFile = (path: string): boolean => ts.sys.useCaseSensitiveFileNames ? resolve(path) === state.path : resolve(path).toLowerCase() === state.path.toLowerCase();
+    const program = ts.createProgram([state.path], { noLib: true, noResolve: true, allowJs: true, target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext }, {
+      getSourceFile: path => sameFile(path) ? state.sourceFile : undefined,
+      getDefaultLibFileName: () => "",
+      writeFile: () => {},
+      getCurrentDirectory: () => dirname(state.path),
+      getCanonicalFileName: path => ts.sys.useCaseSensitiveFileNames ? path : path.toLowerCase(),
+      useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
+      getNewLine: () => "\n",
+      fileExists: sameFile,
+      readFile: path => sameFile(path) ? state.text : undefined,
+    });
+    statistics.programsCreated += 1;
+    const checker = program.getTypeChecker();
+    syntaxCheckers.set(state.sourceFile, checker);
+    return checker;
+  };
 
   const reportDiagnostics = (
     sourceFile: ts.SourceFile,
@@ -229,8 +255,8 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
     let state = files.get(absolute);
     if (state === undefined) {
       const text = await readFile(absolute, "utf8");
-      const scriptKind = absolute.endsWith(".js") || absolute.endsWith(".jsx") ? ts.ScriptKind.JS : ts.ScriptKind.TS;
-      const source = ts.createSourceFile(absolute, text, ts.ScriptTarget.Latest, true, scriptKind);
+      // Let the compiler infer TSX/JSX as well as TS/JS from the file extension.
+      const source = ts.createSourceFile(absolute, text, ts.ScriptTarget.Latest, true);
       state = await buildState(source, container);
       if (project !== undefined) diagnostics.push(defineDiagnostic({ code: "ts.outside-project", severity: "info", message: `${pathToFileURL(absolute).href} is outside the configured project and uses syntax-only mode.`, locations: [{ kind: "source", origin: { uri: pathToFileURL(absolute).href } }] }));
     } else if (container !== undefined) {
@@ -320,6 +346,14 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
     planning,
     apply,
     mount,
+    async moduleInfo(resource: Resource, context: OpenContext = {}) {
+      abort(context.signal);
+      const state = stateFor(resource.id);
+      if (resource.adapter !== "ts" || resource.uri !== state.resource.uri || resource.revision !== state.resource.revision) throw new TypeError("TypeScript module resource does not match its opened snapshot.");
+      const program = service?.getProgram();
+      const configured = program && program.getSourceFile(state.path) === state.sourceFile ? program.getTypeChecker() : undefined;
+      return moduleInfoFor(state.sourceFile, state.resource, new Map([...files.values()].map(file => [file.sourceFile, file.resource])), configured, () => syntaxCheckerFor(state));
+    },
     diagnostics: () => Object.freeze([...diagnostics]),
     statistics: () => Object.freeze({ ...statistics }),
   });
