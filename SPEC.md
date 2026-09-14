@@ -1254,6 +1254,9 @@ Type-only export routes include ambient modules and their merged declarations,
 using captured module symbols without loading additional files.
 Circular wildcard routes remain unknown while terminating routes determine
 the export's type/value status.
+The resolver caches completed results for module/name pairs and resolves
+strongly connected components together, so shared barrel paths do not trigger
+repeated traversal and cycle-dependent partial answers are never cached.
 For an ambient module target, resolvedUri identifies the containing source
 of its first captured module declaration. This is declaration provenance,
 not a promise that the URI is a runtime-loadable implementation.

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import { createTypeScriptAdapter, select } from "@mirek/ast";
 
 const fixture = async (run) => {
@@ -266,15 +267,20 @@ test("type-only re-export chains preserve erasure and explicit value routes", as
   await writeFile(join(root, "cycle-star-a.ts"), 'export * from "./cycle-star-b.js"; export type * from "./origin.js";\n');
   await writeFile(join(root, "cycle-star-b.ts"), 'export * from "./cycle-star-a.js";\n');
   await writeFile(join(root, "cycle-value-a.ts"), 'export * from "./cycle-value-b.js"; export * from "./origin.js";\n');
-  await writeFile(join(root, "cycle-value-b.ts"), 'export * from "./cycle-value-a.js";\n');
+  await writeFile(join(root, "cycle-value-b.ts"), 'export * from "./cycle-value-a.js"; export type * from "./origin.js";\n');
+  await writeFile(join(root, "cycle-value-joined.ts"), 'export { Foo } from "./cycle-value-a.js"; export { Foo as Alias } from "./cycle-value-b.js";\n');
   const inspect = async (file, expected) => {
     const adapter = createTypeScriptAdapter({ project: join(root, "tsconfig.json") });
     const handle = await adapter.read.open({ uri: join(root, file) }, {});
-    try { assert.equal((await adapter.moduleInfo(handle.resource)).exports.find(item => item.name === "Foo").typeOnly, expected, file); }
+    try {
+      const info = await adapter.moduleInfo(handle.resource);
+      assert.equal(info.exports.find(item => item.name === "Foo").typeOnly, expected, file);
+      if (file === "cycle-value-joined.ts") assert.equal(info.exports.find(item => item.name === "Alias").typeOnly, false);
+    }
     finally { await handle.close(); }
   };
   await Promise.all(["named-chain.ts", "star-chain.ts", "local.ts", "cycle-a.ts", "cycle-star-a.ts", "cycle-star-b.ts"].map(file => inspect(file, true)));
-  await Promise.all(["cycle-value-a.ts", "cycle-value-b.ts"].map(file => inspect(file, false)));
+  await Promise.all(["cycle-value-a.ts", "cycle-value-b.ts", "cycle-value-joined.ts"].map(file => inspect(file, false)));
   await inspect("mixed.ts", false);
   await inspect("mixed-star.ts", false);
 }));
@@ -439,4 +445,29 @@ declare module "types" { export interface Extra {} }
   await inspect("mixed-star.ts", false);
   await rm(join(root, "ambient.d.ts"));
   await inspect("direct.ts", true);
+}));
+
+
+test("diamond wildcard graphs finish within a bounded child process", async () => fixture(async (root) => {
+  const depth = 24;
+  const files = [["origin.ts", "export class Foo {}"], [`level-${depth}.ts`, 'export * from "./cycle.js"; export type * from "./origin.js";'], ["cycle.ts", `export * from "./level-${depth}.js";`]];
+  for (let level = 0; level < depth; level++) {
+    files.push([`level-${level}.ts`, `export * from "./left-${level}.js"; export * from "./right-${level}.js";`]);
+    files.push([`left-${level}.ts`, `export * from "./level-${level + 1}.js";`]);
+    files.push([`right-${level}.ts`, `export * from "./level-${level + 1}.js";`]);
+  }
+  await Promise.all(files.map(([name, text]) => writeFile(join(root, name), text)));
+  const script = `
+    import assert from "node:assert/strict";
+    import { createTypeScriptAdapter } from ${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)};
+    const adapter = createTypeScriptAdapter({ project: ${JSON.stringify(join(root, "tsconfig.json"))} });
+    const handle = await adapter.read.open({ uri: ${JSON.stringify(join(root, "level-0.ts"))} }, {});
+    try {
+      const info = await adapter.moduleInfo(handle.resource);
+      assert.equal(info.exports.find(item => item.name === "Foo").typeOnly, true);
+    } finally { await handle.close(); }
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { encoding: "utf8", timeout: 15000 });
+  assert.equal(result.error, undefined, String(result.error));
+  assert.equal(result.status, 0, result.stderr);
 }));

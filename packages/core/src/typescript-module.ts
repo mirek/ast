@@ -80,9 +80,17 @@ const typeOnlyResolver = (checker: ts.TypeChecker): {
   readonly exported: (source: ts.SourceFile, name: string) => boolean | undefined;
   readonly symbol: (symbol: ts.Symbol) => boolean | undefined;
 } => {
+  interface Route {
+    readonly value?: boolean;
+    readonly dependencies: () => readonly Route[];
+  }
+  const type: Route = { value: true, dependencies: () => [] };
+  const value: Route = { value: false, dependencies: () => [] };
   const tables = new Map<ts.Symbol, ReadonlyMap<string, ts.Symbol>>();
-  const active = new Map<ts.Symbol, Set<string>>();
-  const aliases = new Set<ts.Symbol>();
+  const modules = new Map<ts.Symbol, Map<string, Route>>();
+  const symbols = new Map<ts.Symbol, Route>();
+  const edges = new Map<Route, readonly Route[]>();
+  const results = new Map<Route, boolean | undefined>();
   const table = (module: ts.Symbol): ReadonlyMap<string, ts.Symbol> => {
     let found = tables.get(module);
     if (!found) {
@@ -92,82 +100,121 @@ const typeOnlyResolver = (checker: ts.TypeChecker): {
     return found;
   };
   const moduleSymbol = (specifier: ts.Node): ts.Symbol | undefined => checker.getSymbolAtLocation(specifier);
-  const symbolTypeOnly = (symbol: ts.Symbol): boolean | undefined => {
-    if ((symbol.flags & ts.SymbolFlags.Alias) === 0) return (symbol.flags & ts.SymbolFlags.Value) === 0;
-    if (aliases.has(symbol)) return undefined;
-    aliases.add(symbol);
-    try {
-      for (const declaration of symbol.declarations ?? []) {
-        if (ts.isTypeOnlyImportOrExportDeclaration(declaration)) return true;
-        let imported: ts.ImportDeclaration | ts.JSDocImportTag | undefined;
-        let name: string | undefined;
-        if (ts.isImportSpecifier(declaration)) {
-          imported = declaration.parent.parent.parent;
-          name = (declaration.propertyName ?? declaration.name).text;
-        } else if (ts.isImportClause(declaration)) {
-          imported = declaration.parent;
-          name = "default";
-        } else if (ts.isNamespaceImport(declaration) || ts.isNamespaceExport(declaration)) return false;
-        if (imported && name !== undefined) {
-          const remote = moduleSymbol(imported.moduleSpecifier);
-          const result = remote && exported(remote, name);
-          if (result !== undefined) return result;
-        }
-        if (ts.isExportSpecifier(declaration) && declaration.parent.parent.moduleSpecifier) {
-          const remote = moduleSymbol(declaration.parent.parent.moduleSpecifier);
-          const result = remote && exported(remote, (declaration.propertyName ?? declaration.name).text);
-          if (result !== undefined) return result;
-        }
-      }
-      const next = checker.getImmediateAliasedSymbol(symbol);
-      return next && next !== symbol ? symbolTypeOnly(next) : undefined;
-    } finally { aliases.delete(symbol); }
-  };
-  const exported = (module: ts.Symbol, name: string): boolean | undefined => {
-    const symbol = table(module).get(name);
-    if (!symbol) return undefined;
-    let names = active.get(module);
-    if (!names) { names = new Set(); active.set(module, names); }
-    if (names.has(name)) return undefined;
-    names.add(name);
-    try {
-      const statements = (module.declarations ?? []).flatMap(declaration =>
-        ts.isSourceFile(declaration) ? declaration.statements
-          : ts.isModuleDeclaration(declaration) && declaration.body && ts.isModuleBlock(declaration.body) ? declaration.body.statements : []);
-      // Explicit exports take precedence over wildcard routes.
-      for (const statement of statements) {
-        if (ts.isExportDeclaration(statement) && statement.exportClause) {
-          if (ts.isNamespaceExport(statement.exportClause)) {
-            if (statement.exportClause.name.text === name) return statement.isTypeOnly;
-          } else for (const element of statement.exportClause.elements) {
-            if (element.name.text !== name) continue;
-            if (statement.isTypeOnly || element.isTypeOnly) return true;
-            const remote = statement.moduleSpecifier && moduleSymbol(statement.moduleSpecifier);
-            return remote ? exported(remote, (element.propertyName ?? element.name).text) : symbolTypeOnly(symbol);
+  const symbolRoute = (symbol: ts.Symbol): Route => {
+    if ((symbol.flags & ts.SymbolFlags.Alias) === 0) return (symbol.flags & ts.SymbolFlags.Value) === 0 ? type : value;
+    let found = symbols.get(symbol);
+    if (!found) {
+      found = { dependencies: () => {
+        for (const declaration of symbol.declarations ?? []) {
+          if (ts.isTypeOnlyImportOrExportDeclaration(declaration)) return [type];
+          let imported: ts.ImportDeclaration | ts.JSDocImportTag | undefined;
+          let name: string | undefined;
+          if (ts.isImportSpecifier(declaration)) {
+            imported = declaration.parent.parent.parent;
+            name = (declaration.propertyName ?? declaration.name).text;
+          } else if (ts.isImportClause(declaration)) {
+            imported = declaration.parent;
+            name = "default";
+          } else if (ts.isNamespaceImport(declaration) || ts.isNamespaceExport(declaration)) return [value];
+          if (imported && name !== undefined) {
+            const remote = moduleSymbol(imported.moduleSpecifier);
+            if (remote && table(remote).has(name)) return [exportRoute(remote, name)];
           }
-        } else if ((hasModifier(statement, ts.SyntaxKind.ExportKeyword) &&
-          (hasModifier(statement, ts.SyntaxKind.DefaultKeyword) ? name === "default" : declarationNames(statement).some(item => item.name === name))) ||
-          (ts.isExportAssignment(statement) && !statement.isExportEquals && name === "default")) return symbolTypeOnly(symbol);
+          if (ts.isExportSpecifier(declaration) && declaration.parent.parent.moduleSpecifier) {
+            const remote = moduleSymbol(declaration.parent.parent.moduleSpecifier);
+            const remoteName = (declaration.propertyName ?? declaration.name).text;
+            if (remote && table(remote).has(remoteName)) return [exportRoute(remote, remoteName)];
+          }
+        }
+        const next = checker.getImmediateAliasedSymbol(symbol);
+        return next && next !== symbol ? [symbolRoute(next)] : [];
+      } };
+      symbols.set(symbol, found);
+    }
+    return found;
+  };
+  const exportRoute = (module: ts.Symbol, name: string): Route => {
+    let names = modules.get(module);
+    if (!names) { names = new Map(); modules.set(module, names); }
+    let found = names.get(name);
+    if (!found) {
+      found = { dependencies: () => {
+        const symbol = table(module).get(name);
+        if (!symbol) return [];
+        const statements = (module.declarations ?? []).flatMap(declaration =>
+          ts.isSourceFile(declaration) ? declaration.statements
+            : ts.isModuleDeclaration(declaration) && declaration.body && ts.isModuleBlock(declaration.body) ? declaration.body.statements : []);
+        // Explicit exports take precedence over wildcard routes.
+        for (const statement of statements) {
+          if (ts.isExportDeclaration(statement) && statement.exportClause) {
+            if (ts.isNamespaceExport(statement.exportClause)) {
+              if (statement.exportClause.name.text === name) return [statement.isTypeOnly ? type : value];
+            } else for (const element of statement.exportClause.elements) {
+              if (element.name.text !== name) continue;
+              if (statement.isTypeOnly || element.isTypeOnly) return [type];
+              const remote = statement.moduleSpecifier && moduleSymbol(statement.moduleSpecifier);
+              return [remote ? exportRoute(remote, (element.propertyName ?? element.name).text) : symbolRoute(symbol)];
+            }
+          } else if ((hasModifier(statement, ts.SyntaxKind.ExportKeyword) &&
+            (hasModifier(statement, ts.SyntaxKind.DefaultKeyword) ? name === "default" : declarationNames(statement).some(item => item.name === name))) ||
+            (ts.isExportAssignment(statement) && !statement.isExportEquals && name === "default")) return [symbolRoute(symbol)];
+        }
+        const routes: Route[] = [];
+        for (const statement of statements) {
+          if (!ts.isExportDeclaration(statement) || statement.exportClause || !statement.moduleSpecifier || name === "default") continue;
+          const remote = moduleSymbol(statement.moduleSpecifier);
+          if (remote && table(remote).has(name)) routes.push(statement.isTypeOnly ? type : exportRoute(remote, name));
+        }
+        return routes.length ? routes : [symbolRoute(symbol)];
+      } };
+      names.set(name, found);
+    }
+    return found;
+  };
+  const resolve = (root: Route): boolean | undefined => {
+    if (results.has(root)) return results.get(root);
+    const indices = new Map<Route, number>();
+    const low = new Map<Route, number>();
+    const stack: Route[] = [];
+    const active = new Set<Route>();
+    const visit = (node: Route): void => {
+      const index = indices.size;
+      indices.set(node, index); low.set(node, index);
+      stack.push(node); active.add(node);
+      const dependencies = node.dependencies();
+      edges.set(node, dependencies);
+      for (const dependency of dependencies) {
+        if (results.has(dependency)) continue;
+        if (!indices.has(dependency)) {
+          visit(dependency);
+          low.set(node, Math.min(low.get(node)!, low.get(dependency)!));
+        } else if (active.has(dependency)) low.set(node, Math.min(low.get(node)!, indices.get(dependency)!));
       }
-      const routes: boolean[] = [];
-      let hasWildcardRoute = false;
-      for (const statement of statements) {
-        if (!ts.isExportDeclaration(statement) || statement.exportClause || !statement.moduleSpecifier || name === "default") continue;
-        const remote = moduleSymbol(statement.moduleSpecifier);
-        if (!remote || !table(remote).has(name)) continue;
-        hasWildcardRoute = true;
-        const route = statement.isTypeOnly ? true : exported(remote, name);
-        if (route !== undefined) routes.push(route);
+      if (low.get(node) !== index) return;
+      const component = new Set<Route>();
+      let member: Route;
+      do { member = stack.pop()!; active.delete(member); component.add(member); } while (member !== node);
+      let result: boolean | undefined;
+      const include = (next: boolean | undefined): void => {
+        if (next !== undefined) result = result === undefined ? next : result && next;
+      };
+      // All members of a cycle share their terminating routes. Unknown cycles
+      // supply no value; any proven value route overrides type-only routes.
+      for (const item of component) {
+        include(item.value);
+        for (const dependency of edges.get(item)!) if (!component.has(dependency)) include(results.get(dependency));
       }
-      return routes.length ? routes.every(Boolean) : hasWildcardRoute ? undefined : symbolTypeOnly(symbol);
-    } finally { names.delete(name); }
+      for (const item of component) results.set(item, result);
+    };
+    visit(root);
+    return results.get(root);
   };
   return {
     exported: (source, name) => {
       const module = checker.getSymbolAtLocation(source);
-      return module && exported(module, name);
+      return module && resolve(exportRoute(module, name));
     },
-    symbol: symbolTypeOnly,
+    symbol: symbol => resolve(symbolRoute(symbol)),
   };
 };
 
