@@ -298,7 +298,8 @@ of type-only imports retain their type-only status in both modes. Named default
 exports keep their declaration's local name; anonymous defaults omit it.
 Namespace re-exports omit local names too. CommonJS export assignment appears
 as one `export=` entry, and all declarators in a documented variable statement
-inherit its JSDoc unless they have their own blocks.
+inherit its JSDoc unless they have their own blocks. This includes nested
+object/array destructuring and rest bindings.
 Unresolved imports retain their
 specifier without a fabricated target. The inventory includes static import
 declarations, external import-equals declarations, and re-exports; dynamic
@@ -309,7 +310,11 @@ TSX/JSX syntax using the compiler's extension inference. They report
 explicit exports, exported import-equals declarations and local export aliases; they do not resolve imports or
 expand wildcard re-exports. `mode` states this distinction on each result.
 Exports appear in compiler export-table order in project mode and source order
-in syntax-only mode. Imports remain in source order, including duplicates.
+in syntax-only mode. Empty or type-only namespaces remain type-only in both
+modes. Syntax-only namespace classification lazily caches a single-file compiler
+binder with an in-memory host; it does not read or resolve dependencies. Its
+program is included in `statistics().programsCreated`. Imports remain in source
+order, including duplicates.
 Source offsets use UTF-16 and line/column positions are zero-based. Declaration
 origins carry revisions only when their compiler SourceFile is the same snapshot
 as an adapter-observed resource; external compiler declarations can have a location without a revision.

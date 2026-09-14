@@ -46,6 +46,8 @@ const originFor = (node: ts.Node, resources: ReadonlyMap<ts.SourceFile, Resource
 
 const documentationFor = (node: ts.Node): string | undefined => {
   let blocks = ts.getJSDocCommentsAndTags(node).filter(ts.isJSDoc);
+  while (ts.isBindingElement(node) || ts.isObjectBindingPattern(node) || ts.isArrayBindingPattern(node)) node = node.parent;
+  if (blocks.length === 0 && ts.isVariableDeclaration(node)) blocks = ts.getJSDocCommentsAndTags(node).filter(ts.isJSDoc);
   if (blocks.length === 0 && ts.isVariableDeclaration(node) && ts.isVariableDeclarationList(node.parent) && ts.isVariableStatement(node.parent.parent)) {
     blocks = ts.getJSDocCommentsAndTags(node.parent.parent).filter(ts.isJSDoc);
   }
@@ -70,7 +72,14 @@ export const moduleInfoFor = (
   resource: Resource,
   resources: ReadonlyMap<ts.SourceFile, Resource>,
   checker: ts.TypeChecker | undefined,
+  syntaxChecker: () => ts.TypeChecker,
 ): TypeScriptModuleInfo => {
+  const typeOnlyDeclaration = (node: ts.Node): boolean => {
+    if (ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) return true;
+    if (!ts.isModuleDeclaration(node)) return false;
+    const symbol = (checker ?? syntaxChecker()).getSymbolAtLocation(node.name);
+    return symbol !== undefined && (symbol.flags & ts.SymbolFlags.Value) === 0;
+  };
   const imports: TypeScriptModuleImport[] = [];
   const exports = new Map<string, TypeScriptModuleExport>();
   const explicitExports = new Map<string, boolean>();
@@ -130,7 +139,7 @@ export const moduleInfoFor = (
       const isDefault = hasModifier(statement, ts.SyntaxKind.DefaultKeyword);
       const names = declarationNames(statement);
       if (isDefault) exports.set("default", exportEntry("default", statement, ts.isInterfaceDeclaration(statement), names[0]?.name));
-      else for (const item of names) exports.set(item.name, exportEntry(item.name, item.node, ts.isInterfaceDeclaration(item.node) || ts.isTypeAliasDeclaration(item.node) || typeOnlyLocals.has(item.name), item.name));
+      else for (const item of names) exports.set(item.name, exportEntry(item.name, item.node, typeOnlyDeclaration(item.node) || typeOnlyLocals.has(item.name), item.name));
     }
     if (ts.isExportAssignment(statement)) {
       const name = statement.isExportEquals ? "export=" : "default";
@@ -140,7 +149,7 @@ export const moduleInfoFor = (
       if (ts.isNamedExports(statement.exportClause)) for (const element of statement.exportClause.elements) {
         const localName = (element.propertyName ?? element.name).text;
         const declaration = statement.moduleSpecifier ? undefined : locals.get(localName);
-        exports.set(element.name.text, exportEntry(element.name.text, declaration ?? element, statement.isTypeOnly || element.isTypeOnly || (!statement.moduleSpecifier && typeOnlyLocals.has(localName)) || (declaration !== undefined && (ts.isInterfaceDeclaration(declaration) || ts.isTypeAliasDeclaration(declaration))), localName));
+        exports.set(element.name.text, exportEntry(element.name.text, declaration ?? element, statement.isTypeOnly || element.isTypeOnly || (!statement.moduleSpecifier && typeOnlyLocals.has(localName)) || (declaration !== undefined && typeOnlyDeclaration(declaration)), localName));
       }
       else exports.set(statement.exportClause.name.text, exportEntry(statement.exportClause.name.text, statement.exportClause, statement.isTypeOnly));
     }
@@ -153,7 +162,7 @@ export const moduleInfoFor = (
     const target = symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0 ? checker?.getAliasedSymbol(symbol) : symbol;
     const declaration = target?.declarations?.[0] ?? (ts.isIdentifier(expression) ? locals.get(expression.text) : undefined) ?? exportEquals;
     exports.clear();
-    exports.set("export=", exportEntry("export=", declaration, ts.isInterfaceDeclaration(declaration) || ts.isTypeAliasDeclaration(declaration), ts.isIdentifier(expression) ? expression.text : undefined));
+    exports.set("export=", exportEntry("export=", declaration, typeOnlyDeclaration(declaration), ts.isIdentifier(expression) ? expression.text : undefined));
   }
   if (!exportEquals && checker && moduleSymbol) for (const symbol of checker.getExportsOfModule(moduleSymbol)) {
     const target = (symbol.flags & ts.SymbolFlags.Alias) !== 0 ? checker.getAliasedSymbol(symbol) : symbol;

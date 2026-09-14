@@ -1262,12 +1262,17 @@ Namespace re-exports also omit localName, rather than exposing an internal
 module filename. CommonJS export assignment is one `export=` entry, never an
 expansion of the assigned class's static members. Every declarator in a
 documented variable statement inherits its statement's JSDoc when it lacks
-its own blocks.
+its own blocks. Binding elements walk through nested object/array patterns to
+their variable declaration and statement when inheriting JSDoc. Empty namespaces
+and namespaces containing only types remain type-only in both modes.
 Syntax-only analysis lists directly declared exports, exported import-equals
 declarations, and explicit export clauses,
 and infers TSX/JSX syntax from the source extension through the compiler,
 including local aliases, but does not expand wildcard re-exports or invent
-module resolution. Files outside the configured project use this latter mode.
+module resolution. Namespace value/type classification uses a lazy cached
+single-file compiler binder backed only by the observed source, with no disk
+reads or dependency resolution. This program contributes to the adapter
+programsCreated statistic. Files outside the configured project use this latter mode.
 Import order is source order; export order is compiler export-table order or
 source order respectively. This is an inventory projection, not a new graph
 edge role, mutation capability, or interpretation of arbitrary JavaScript.
