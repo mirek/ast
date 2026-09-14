@@ -1278,7 +1278,8 @@ their authored source name (`Foo` in `export { Foo as Bar }`). Direct namespace 
 omit localName even when the target is unresolved. CommonJS export assignment is one `export=` entry, never an
 expansion of the assigned class's static members. Every declarator in a
 documented variable statement inherits its statement's JSDoc when it lacks
-its own blocks. Binding elements walk through nested object/array patterns to
+its own blocks. Destructured exports retain each leaf BindingElement's kind
+and range in both analysis modes. Binding elements walk through nested object/array patterns to
 their variable declaration and statement when inheriting JSDoc. Empty namespaces
 and namespaces containing only types remain type-only in both modes. Merged
 declaration names use their aggregate compiler symbol for value/type status;

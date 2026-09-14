@@ -61,7 +61,7 @@ const bindingNames = (name: ts.BindingName): readonly ts.Identifier[] =>
   ts.isIdentifier(name) ? [name] : name.elements.flatMap(element => ts.isOmittedExpression(element) ? [] : bindingNames(element.name));
 
 const declarationNames = (statement: ts.Statement): readonly { name: string; node: ts.Node }[] => {
-  if (ts.isVariableStatement(statement)) return statement.declarationList.declarations.flatMap(node => bindingNames(node.name).map(name => ({ name: name.text, node })));
+  if (ts.isVariableStatement(statement)) return statement.declarationList.declarations.flatMap(node => bindingNames(node.name).map(name => ({ name: name.text, node: name.parent })));
   const name = ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) || ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement) || ts.isEnumDeclaration(statement) || ts.isModuleDeclaration(statement) || ts.isImportEqualsDeclaration(statement) ? statement.name : undefined;
   return name !== undefined && ts.isIdentifier(name) ? [{ name: name.text, node: statement }] : [];
 };

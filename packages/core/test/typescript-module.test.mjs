@@ -207,16 +207,17 @@ test("exported type-only import-equals aliases keep their type status in both mo
 }));
 
 test("erased namespaces and destructured JSDoc agree in both analysis modes", async () => fixture(async (root) => {
-  await writeFile(join(root, "index.ts"), [
+  const sourceText = [
     'export namespace Types { export interface X {} }',
     'export namespace Empty {}',
     'export namespace Nested { export namespace Types { export type T = string } }',
     'export namespace Values { export const value = 1 }',
     'export { Types as Alias };',
     'const source = { value: 1, nested: { leaf: 2 } };',
-    '/** Public destructuring. */ export const { value, nested: { leaf } } = source;',
+    '/** Public destructuring. */ export const { value, value: renamed, nested: { leaf } } = source;',
     '/** Public tuple. */ export const [first, ...rest] = [1, 2, 3];',
-  ].join('\n'));
+  ].join('\n');
+  await writeFile(join(root, "index.ts"), sourceText);
   await Promise.all([{}, { project: join(root, "tsconfig.json") }].map(async options => {
     const adapter = createTypeScriptAdapter(options);
     const handle = await adapter.read.open({ uri: join(root, "index.ts") }, {});
@@ -225,8 +226,13 @@ test("erased namespaces and destructured JSDoc agree in both analysis modes", as
       const byName = new Map(info.exports.map(item => [item.name, item]));
       for (const name of ["Types", "Empty", "Nested", "Alias"]) assert.equal(byName.get(name).typeOnly, true, `${info.mode}: ${name}`);
       assert.equal(byName.get("Values").typeOnly, false);
-      for (const name of ["value", "leaf"]) assert.match(byName.get(name).documentation, /Public destructuring/, `${info.mode}: ${name}`);
+      for (const name of ["value", "renamed", "leaf"]) assert.match(byName.get(name).documentation, /Public destructuring/, `${info.mode}: ${name}`);
       for (const name of ["first", "rest"]) assert.match(byName.get(name).documentation, /Public tuple/, `${info.mode}: ${name}`);
+      for (const [name, text] of [["value", "value"], ["renamed", "value: renamed"], ["leaf", "leaf"], ["first", "first"], ["rest", "...rest"]]) {
+        const item = byName.get(name);
+        assert.equal(item.declarationKind, "BindingElement", `${info.mode}: ${name}`);
+        assert.equal(sourceText.slice(item.origin.range.start, item.origin.range.end), text, `${info.mode}: ${name}`);
+      }
       assert.deepEqual(await adapter.moduleInfo(handle.resource), info);
     } finally { await handle.close(); }
   }));
