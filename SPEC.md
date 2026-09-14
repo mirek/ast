@@ -1255,6 +1255,7 @@ declarations inherit their statement's JSDoc through the compiler API.
 Type-only wildcard re-exports do not turn an exported class into a value export.
 Default interfaces are type-only in both modes. Local export clauses retain
 type-only imported bindings, including default, namespace, and named imports.
+Exported type-only import-equals aliases remain type-only in both modes.
 Named default declarations use their declaration name as `localName`, not the
 compiler's synthetic `default` export name; anonymous defaults omit it.
 Namespace re-exports also omit localName, rather than exposing an internal

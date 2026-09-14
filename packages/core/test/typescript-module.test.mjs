@@ -189,3 +189,18 @@ test("declaration revisions never label a different compiler source snapshot", a
     } finally { await dependency.close(); }
   } finally { await entry.close(); }
 }));
+
+test("exported type-only import-equals aliases keep their type status in both modes", async () => fixture(async (root) => {
+  await writeFile(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions: { module: "nodenext" }, include: ["*.cts"] }));
+  await writeFile(join(root, "api.cts"), "class API {}\nexport = API;\n");
+  await writeFile(join(root, "index.cts"), 'export import type API = require("./api.cjs");\n');
+  await Promise.all([{}, { project: join(root, "tsconfig.json") }].map(async options => {
+    const adapter = createTypeScriptAdapter(options);
+    const handle = await adapter.read.open({ uri: join(root, "index.cts") }, {});
+    try {
+      const info = await adapter.moduleInfo(handle.resource);
+      assert.deepEqual(info.exports.map(item => item.name), ["API"]);
+      assert.equal(info.exports[0].typeOnly, true);
+    } finally { await handle.close(); }
+  }));
+}));

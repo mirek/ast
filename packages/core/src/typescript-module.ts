@@ -122,7 +122,7 @@ export const moduleInfoFor = (
     if (checker !== undefined) {
       if (hasModifier(statement, ts.SyntaxKind.ExportKeyword) && !ts.isExportDeclaration(statement)) {
         if (hasModifier(statement, ts.SyntaxKind.DefaultKeyword)) explicitExports.set("default", false);
-        else for (const item of declarationNames(statement)) explicitExports.set(item.name, false);
+        else for (const item of declarationNames(statement)) explicitExports.set(item.name, typeOnlyLocals.has(item.name));
       }
       continue;
     }
