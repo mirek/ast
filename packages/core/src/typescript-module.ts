@@ -66,6 +66,15 @@ const declarationNames = (statement: ts.Statement): readonly { name: string; nod
   return name !== undefined && ts.isIdentifier(name) ? [{ name: name.text, node: statement }] : [];
 };
 
+const localExportName = (symbol: ts.Symbol): string | undefined => {
+  for (const declaration of symbol.declarations ?? []) {
+    if (ts.isExportAssignment(declaration) && ts.isIdentifier(declaration.expression)) return declaration.expression.text;
+    if (ts.isExportSpecifier(declaration) && !declaration.parent.parent.moduleSpecifier) return (declaration.propertyName ?? declaration.name).text;
+    if (ts.isImportEqualsDeclaration(declaration)) return declaration.name.text;
+  }
+  return undefined;
+};
+
 /** Follow authored export routes using only the captured compiler graph. */
 const typeOnlyResolver = (checker: ts.TypeChecker): {
   readonly exported: (source: ts.SourceFile, name: string) => boolean | undefined;
@@ -265,7 +274,7 @@ export const moduleInfoFor = (
     if (!declaration) continue;
     const explicitType = explicitExports.get(symbol.name) ?? (typeStars.has(symbol.name) && !valueStars.has(symbol.name));
     const declaredName = (declaration as ts.NamedDeclaration).name;
-    const localName = declaredName && ts.isIdentifier(declaredName) ? declaredName.text : undefined;
+    const localName = declaredName && ts.isIdentifier(declaredName) ? declaredName.text : localExportName(symbol);
     const typeOnly = configuredTypeOnly?.exported(source, symbol.name) ?? (explicitType || (target.flags & ts.SymbolFlags.Value) === 0);
     exports.set(symbol.name, exportEntry(symbol.name, declaration, typeOnly, localName));
   }

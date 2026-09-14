@@ -325,3 +325,24 @@ test("export-equals keeps explicitly imported type-only aliases erased", async (
     } finally { await handle.close(); }
   }));
 }));
+
+test("anonymous targets retain authored local export bindings without inventing remote names", async () => fixture(async (root) => {
+  await writeFile(join(root, "api.ts"), "export const value = 1;\n");
+  await writeFile(join(root, "anonymous.ts"), "export default function () {}\n");
+  await writeFile(join(root, "default.ts"), 'import * as API from "./api.js"; export default API;\n');
+  await writeFile(join(root, "named.ts"), 'import * as API from "./api.js"; export { API as Public };\n');
+  await writeFile(join(root, "factory.ts"), 'import factory from "./anonymous.js"; export default factory;\n');
+  await writeFile(join(root, "remote.ts"), 'export * as API from "./api.js"; export { default as factory } from "./anonymous.js";\n');
+  await writeFile(join(root, "equals.ts"), 'export import API = require("./api.js");\n');
+  const adapter = createTypeScriptAdapter({ project: join(root, "tsconfig.json") });
+  const inspect = async (file) => {
+    const handle = await adapter.read.open({ uri: join(root, file) }, {});
+    try { return (await adapter.moduleInfo(handle.resource)).exports; }
+    finally { await handle.close(); }
+  };
+  assert.equal((await inspect("default.ts"))[0].localName, "API");
+  assert.equal((await inspect("named.ts"))[0].localName, "API");
+  assert.equal((await inspect("factory.ts"))[0].localName, "factory");
+  assert.equal((await inspect("equals.ts"))[0].localName, "API");
+  assert.equal((await inspect("remote.ts")).every(item => item.localName === undefined), true);
+}));

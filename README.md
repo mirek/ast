@@ -295,9 +295,11 @@ export table. Export aliases retain their public name and refer to the original
 declaration and its JSDoc, including variable-statement documentation. Type-only
 imports and re-exports remain distinguishable. Default interfaces and local re-exports
 of type-only imports retain their type-only status in both modes. Named default
-exports keep their declaration's local name; anonymous defaults omit it.
+exports keep their declaration's local name; direct anonymous defaults omit it.
 Default identifier exports reuse known local declarations and their JSDoc.
-Namespace re-exports omit local names too. CommonJS export assignment appears
+When a resolved target has no declaration name, authored local export bindings
+supply the local name. Direct `export * as ns` re-exports have no local binding
+and omit it. CommonJS export assignment appears
 as one `export=` entry, and all declarators in a documented variable statement
 inherit its JSDoc unless they have their own blocks. This includes nested
 object/array destructuring and rest bindings.
