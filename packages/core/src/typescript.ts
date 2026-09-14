@@ -329,7 +329,7 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
       const state = stateFor(resource.id);
       if (resource.adapter !== "ts" || resource.uri !== state.resource.uri || resource.revision !== state.resource.revision) throw new TypeError("TypeScript module resource does not match its opened snapshot.");
       const configured = projectFiles.includes(state.path) ? checker() : undefined;
-      return moduleInfoFor(state.sourceFile, state.resource, new Map([...files.values()].map(file => [file.resource.uri, file.resource])), configured, compilerOptions);
+      return moduleInfoFor(state.sourceFile, state.resource, new Map([...files.values()].map(file => [file.sourceFile, file.resource])), configured);
     },
     diagnostics: () => Object.freeze([...diagnostics]),
     statistics: () => Object.freeze({ ...statistics }),

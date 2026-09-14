@@ -31,13 +31,13 @@ export interface TypeScriptModuleInfo {
   readonly exports: readonly TypeScriptModuleExport[];
 }
 
-const originFor = (node: ts.Node, resources: ReadonlyMap<string, Resource>): Origin => {
+const originFor = (node: ts.Node, resources: ReadonlyMap<ts.SourceFile, Resource>): Origin => {
   const source = node.getSourceFile();
   const uri = pathToFileURL(source.fileName).href;
   const start = node.getStart(source);
   const first = source.getLineAndCharacterOfPosition(start);
   const last = source.getLineAndCharacterOfPosition(node.end);
-  const revision = resources.get(uri)?.revision;
+  const revision = resources.get(source)?.revision;
   return { uri, ...(revision === undefined ? {} : { revision }), range: {
     start, end: node.end, startLine: first.line, startColumn: first.character,
     endLine: last.line, endColumn: last.character,
@@ -60,7 +60,7 @@ const bindingNames = (name: ts.BindingName): readonly ts.Identifier[] =>
 
 const declarationNames = (statement: ts.Statement): readonly { name: string; node: ts.Node }[] => {
   if (ts.isVariableStatement(statement)) return statement.declarationList.declarations.flatMap(node => bindingNames(node.name).map(name => ({ name: name.text, node })));
-  const name = ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) || ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement) || ts.isEnumDeclaration(statement) || ts.isModuleDeclaration(statement) ? statement.name : undefined;
+  const name = ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) || ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement) || ts.isEnumDeclaration(statement) || ts.isModuleDeclaration(statement) || ts.isImportEqualsDeclaration(statement) ? statement.name : undefined;
   return name !== undefined && ts.isIdentifier(name) ? [{ name: name.text, node: statement }] : [];
 };
 
@@ -68,9 +68,8 @@ const declarationNames = (statement: ts.Statement): readonly { name: string; nod
 export const moduleInfoFor = (
   source: ts.SourceFile,
   resource: Resource,
-  resources: ReadonlyMap<string, Resource>,
+  resources: ReadonlyMap<ts.SourceFile, Resource>,
   checker: ts.TypeChecker | undefined,
-  compilerOptions: ts.CompilerOptions,
 ): TypeScriptModuleInfo => {
   const imports: TypeScriptModuleImport[] = [];
   const exports = new Map<string, TypeScriptModuleExport>();
@@ -117,8 +116,8 @@ export const moduleInfoFor = (
       specifier = statement.moduleReference.expression; kind = "import-equals"; typeOnly = statement.isTypeOnly;
     }
     if (specifier && ts.isStringLiteralLike(specifier)) {
-      const resolved = checker === undefined ? undefined : ts.resolveModuleName(specifier.text, source.fileName, compilerOptions, ts.sys, undefined, undefined, ts.getModeForUsageLocation(source, specifier, compilerOptions)).resolvedModule;
-      imports.push({ kind, specifier: specifier.text, typeOnly, origin: originFor(statement, resources), ...(resolved === undefined ? {} : { resolvedUri: pathToFileURL(resolved.resolvedFileName).href }) });
+      const resolved = checker?.getSymbolAtLocation(specifier)?.declarations?.find(ts.isSourceFile);
+      imports.push({ kind, specifier: specifier.text, typeOnly, origin: originFor(statement, resources), ...(resolved === undefined ? {} : { resolvedUri: pathToFileURL(resolved.fileName).href }) });
     }
     if (checker !== undefined) {
       if (hasModifier(statement, ts.SyntaxKind.ExportKeyword) && !ts.isExportDeclaration(statement)) {
@@ -131,7 +130,7 @@ export const moduleInfoFor = (
       const isDefault = hasModifier(statement, ts.SyntaxKind.DefaultKeyword);
       const names = declarationNames(statement);
       if (isDefault) exports.set("default", exportEntry("default", statement, ts.isInterfaceDeclaration(statement), names[0]?.name));
-      else for (const item of names) exports.set(item.name, exportEntry(item.name, item.node, ts.isInterfaceDeclaration(item.node) || ts.isTypeAliasDeclaration(item.node), item.name));
+      else for (const item of names) exports.set(item.name, exportEntry(item.name, item.node, ts.isInterfaceDeclaration(item.node) || ts.isTypeAliasDeclaration(item.node) || typeOnlyLocals.has(item.name), item.name));
     }
     if (ts.isExportAssignment(statement)) {
       const name = statement.isExportEquals ? "export=" : "default";

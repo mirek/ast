@@ -306,13 +306,15 @@ imports and CommonJS `require` calls are outside this inventory.
 
 Syntax-only files, including files outside the configured project, report
 TSX/JSX syntax using the compiler's extension inference. They report
-explicit exports and local export aliases; they do not resolve imports or
+explicit exports, exported import-equals declarations and local export aliases; they do not resolve imports or
 expand wildcard re-exports. `mode` states this distinction on each result.
 Exports appear in compiler export-table order in project mode and source order
 in syntax-only mode. Imports remain in source order, including duplicates.
 Source offsets use UTF-16 and line/column positions are zero-based. Declaration
-origins carry revisions when their source is one of the adapter's observed
-resources; external compiler declarations can have a location without a revision.
+origins carry revisions only when their compiler SourceFile is the same snapshot
+as an adapter-observed resource; external compiler declarations can have a location without a revision.
+Import targets come from that captured compiler symbol graph, so adding or
+removing files after opening cannot silently change their resolved URIs.
 An inventory describes the opened snapshot, not a refreshed filesystem read.
 The supplied resource must match that snapshot, and an optional abort signal is
 checked before the synchronous compiler projection. Existing adapter diagnostics

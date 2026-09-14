@@ -142,3 +142,50 @@ test("type-only re-exports and files outside the project keep their actual seman
     finally { await outside.close(); }
   } finally { await handle.close(); }
 }));
+
+test("exported import-equals aliases appear outside configured projects", async () => fixture(async (root) => {
+  await writeFile(join(root, "index.cts"), 'export import API = require("./api.cjs");\n');
+  const adapter = createTypeScriptAdapter();
+  const handle = await adapter.read.open({ uri: join(root, "index.cts") }, {});
+  try {
+    const info = await adapter.moduleInfo(handle.resource);
+    assert.deepEqual(info.exports.map(item => item.name), ["API"]);
+    assert.equal(info.exports[0].localName, "API");
+    assert.equal(info.exports[0].typeOnly, false);
+  } finally { await handle.close(); }
+}));
+
+test("configured import resolution stays with its captured compiler snapshot", async () => fixture(async (root) => {
+  await writeFile(join(root, "lib.ts"), "export const value = 1;\n");
+  await writeFile(join(root, "setup.ts"), "console.log(1);\n");
+  await writeFile(join(root, "index.ts"), 'import { value } from "./lib.js"; import "./later.js"; import "./setup.js"; export { value };\n');
+  const adapter = createTypeScriptAdapter({ project: join(root, "tsconfig.json") });
+  const handle = await adapter.read.open({ uri: join(root, "index.ts") }, {});
+  try {
+    const before = await adapter.moduleInfo(handle.resource);
+    assert.ok(before.imports[0].resolvedUri?.endsWith("/lib.ts"));
+    assert.equal(before.imports[1].resolvedUri, undefined);
+    assert.ok(before.imports[2].resolvedUri?.endsWith("/setup.ts"));
+    await rm(join(root, "lib.ts"));
+    await writeFile(join(root, "later.ts"), "export const later = true;\n");
+    assert.deepEqual(await adapter.moduleInfo(handle.resource), before);
+  } finally { await handle.close(); }
+}));
+
+test("declaration revisions never label a different compiler source snapshot", async () => fixture(async (root) => {
+  await writeFile(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions: { module: "nodenext" }, files: ["index.ts"], include: [] }));
+  await writeFile(join(root, "lib.ts"), "/** Old API. */\nexport const value = 1;\n");
+  await writeFile(join(root, "index.ts"), 'export { value } from "./lib.js";\n');
+  const adapter = createTypeScriptAdapter({ project: join(root, "tsconfig.json") });
+  const entry = await adapter.read.open({ uri: join(root, "index.ts") }, {});
+  try {
+    await writeFile(join(root, "lib.ts"), "/** New API with a different source length. */\nexport const value = 123;\n");
+    const dependency = await adapter.read.open({ uri: join(root, "lib.ts") }, {});
+    try {
+      const declaration = (await adapter.moduleInfo(entry.resource)).exports[0];
+      assert.match(declaration.documentation, /Old API/);
+      assert.equal(declaration.origin.revision, undefined);
+      assert.notEqual(declaration.origin.revision, dependency.resource.revision);
+    } finally { await dependency.close(); }
+  } finally { await entry.close(); }
+}));

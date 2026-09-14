@@ -1262,7 +1262,8 @@ module filename. CommonJS export assignment is one `export=` entry, never an
 expansion of the assigned class's static members. Every declarator in a
 documented variable statement inherits its statement's JSDoc when it lacks
 its own blocks.
-Syntax-only analysis lists directly declared exports and explicit export clauses,
+Syntax-only analysis lists directly declared exports, exported import-equals
+declarations, and explicit export clauses,
 and infers TSX/JSX syntax from the source extension through the compiler,
 including local aliases, but does not expand wildcard re-exports or invent
 module resolution. Files outside the configured project use this latter mode.
@@ -1271,8 +1272,11 @@ source order respectively. This is an inventory projection, not a new graph
 edge role, mutation capability, or interpretation of arbitrary JavaScript.
 
 Locations carry UTF-16 offsets and zero-based line/column positions. Declaration
-revisions are present only for adapter-observed source resources; external
-compiler declarations can have locations without revisions. The resource
+revisions are present only when the compiler SourceFile matches an
+adapter-observed source snapshot; URI equality alone is insufficient. External
+compiler declarations can have locations without revisions. Import targets
+come from the captured compiler symbol graph, without consulting the current
+filesystem during projection. The resource
 identity, URI, adapter, and revision must match the opened snapshot. Analysis
 does not refresh that snapshot from disk. It checks cancellation before its
 synchronous compiler projection; adapter diagnostics retain their existing
