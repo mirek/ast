@@ -1253,6 +1253,10 @@ aliases, original declaration names/kinds, type-only status, declaration
 origins, and exact declaration JSDoc blocks with tags where present. Variable
 declarations inherit their statement's JSDoc through the compiler API.
 Type-only wildcard re-exports do not turn an exported class into a value export.
+Default interfaces are type-only in both modes. Local export clauses retain
+type-only imported bindings, including default, namespace, and named imports.
+Named default declarations use their declaration name as `localName`, not the
+compiler's synthetic `default` export name; anonymous defaults omit it.
 Syntax-only analysis lists directly declared exports and explicit export clauses,
 including local aliases, but does not expand wildcard re-exports or invent
 module resolution. Files outside the configured project use this latter mode.

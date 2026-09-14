@@ -14,6 +14,31 @@ const fixture = async (run) => {
   } finally { await rm(root, { recursive: true, force: true }); }
 };
 
+test("default declarations and imported type-only aliases retain export identity in both modes", async () => fixture(async (root) => {
+  await writeFile(join(root, "lib.ts"), 'export class Foo {}\nexport default class Bar {}\n');
+  await writeFile(join(root, "a.ts"), 'import type Bar from "./lib.js";\nimport { type Foo as F } from "./lib.js";\nexport { F as Foo, Bar };\nexport default interface Service {}\n');
+  await writeFile(join(root, "b.ts"), 'export default function greet() {}\n');
+  for (const options of [{}, { project: join(root, "tsconfig.json") }]) {
+    const adapter = createTypeScriptAdapter(options);
+    for (const file of ["a.ts", "b.ts"]) {
+      // eslint-disable-next-line no-await-in-loop -- Adapter declares parallelReads: false.
+      const handle = await adapter.read.open({ uri: join(root, file) }, {});
+      try {
+        // eslint-disable-next-line no-await-in-loop -- Query each opened snapshot sequentially.
+        const info = await adapter.moduleInfo(handle.resource);
+        if (file === "a.ts") {
+          assert.equal(info.exports.length, 3);
+          assert.equal(info.exports.every(item => item.typeOnly), true);
+          assert.equal(info.exports.find(item => item.name === "default").localName, "Service");
+        } else assert.equal(info.exports[0].localName, "greet");
+      } finally {
+        // eslint-disable-next-line no-await-in-loop -- Close before opening the next resource.
+        await handle.close();
+      }
+    }
+  }
+}));
+
 test("module analysis resolves imports and exposes exported aliases with JSDoc", async () => fixture(async (root) => {
   await writeFile(join(root, "lib.ts"), '/** Greet a reader.\n * @param name Reader name.\n */\nexport function greet(name: string) { return name; }\n/** User identifier. */\nexport type User = string;\n/** Current version. */\nexport const version = 1;\n');
   await writeFile(join(root, "index.ts"), 'import type { User } from "@lib/lib";\nimport { greet as hello } from "./lib.js";\nimport "missing-package";\nexport { hello as welcome };\nexport type { User } from "./lib.js";\nexport * from "./lib.js";\n');

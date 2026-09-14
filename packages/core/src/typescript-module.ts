@@ -74,6 +74,18 @@ export const moduleInfoFor = (
   const explicitExports = new Map<string, boolean>();
   const typeStars = new Set<string>();
   const valueStars = new Set<string>();
+  const typeOnlyLocals = new Set<string>();
+  for (const statement of source.statements) {
+    if (ts.isImportDeclaration(statement) && statement.importClause) {
+      const clause = statement.importClause;
+      if (clause.isTypeOnly && clause.name) typeOnlyLocals.add(clause.name.text);
+      if (clause.namedBindings) {
+        if (ts.isNamespaceImport(clause.namedBindings)) {
+          if (clause.isTypeOnly) typeOnlyLocals.add(clause.namedBindings.name.text);
+        } else for (const element of clause.namedBindings.elements) if (clause.isTypeOnly || element.isTypeOnly) typeOnlyLocals.add(element.name.text);
+      }
+    } else if (ts.isImportEqualsDeclaration(statement) && statement.isTypeOnly) typeOnlyLocals.add(statement.name.text);
+  }
   const locals = new Map(source.statements.flatMap(declarationNames).map(item => [item.name, item.node]));
   const exportEntry = (name: string, node: ts.Node, typeOnly: boolean, localName?: string): TypeScriptModuleExport => {
     const documentation = documentationFor(node);
@@ -92,7 +104,7 @@ export const moduleInfoFor = (
       specifier = statement.moduleSpecifier; kind = "re-export"; typeOnly = statement.isTypeOnly;
       if (statement.exportClause && ts.isNamedExports(statement.exportClause) && statement.exportClause.elements.length > 0) typeOnly ||= statement.exportClause.elements.every(element => element.isTypeOnly);
       if (statement.exportClause) {
-        if (ts.isNamedExports(statement.exportClause)) for (const element of statement.exportClause.elements) explicitExports.set(element.name.text, statement.isTypeOnly || element.isTypeOnly);
+        if (ts.isNamedExports(statement.exportClause)) for (const element of statement.exportClause.elements) explicitExports.set(element.name.text, statement.isTypeOnly || element.isTypeOnly || (!statement.moduleSpecifier && typeOnlyLocals.has((element.propertyName ?? element.name).text)));
         else explicitExports.set(statement.exportClause.name.text, statement.isTypeOnly);
       } else if (checker && statement.moduleSpecifier) {
         const module = checker.getSymbolAtLocation(statement.moduleSpecifier);
@@ -115,7 +127,7 @@ export const moduleInfoFor = (
     if (hasModifier(statement, ts.SyntaxKind.ExportKeyword)) {
       const isDefault = hasModifier(statement, ts.SyntaxKind.DefaultKeyword);
       const names = declarationNames(statement);
-      if (isDefault) exports.set("default", exportEntry("default", statement, false, names[0]?.name));
+      if (isDefault) exports.set("default", exportEntry("default", statement, ts.isInterfaceDeclaration(statement), names[0]?.name));
       else for (const item of names) exports.set(item.name, exportEntry(item.name, item.node, ts.isInterfaceDeclaration(item.node) || ts.isTypeAliasDeclaration(item.node), item.name));
     }
     if (ts.isExportAssignment(statement)) {
@@ -126,7 +138,7 @@ export const moduleInfoFor = (
       if (ts.isNamedExports(statement.exportClause)) for (const element of statement.exportClause.elements) {
         const localName = (element.propertyName ?? element.name).text;
         const declaration = statement.moduleSpecifier ? undefined : locals.get(localName);
-        exports.set(element.name.text, exportEntry(element.name.text, declaration ?? element, statement.isTypeOnly || element.isTypeOnly || (declaration !== undefined && (ts.isInterfaceDeclaration(declaration) || ts.isTypeAliasDeclaration(declaration))), localName));
+        exports.set(element.name.text, exportEntry(element.name.text, declaration ?? element, statement.isTypeOnly || element.isTypeOnly || (!statement.moduleSpecifier && typeOnlyLocals.has(localName)) || (declaration !== undefined && (ts.isInterfaceDeclaration(declaration) || ts.isTypeAliasDeclaration(declaration))), localName));
       }
       else exports.set(statement.exportClause.name.text, exportEntry(statement.exportClause.name.text, statement.exportClause, statement.isTypeOnly));
     }
@@ -137,7 +149,9 @@ export const moduleInfoFor = (
     const declaration = target.declarations?.[0] ?? symbol.declarations?.[0];
     if (!declaration) continue;
     const explicitType = explicitExports.get(symbol.name) ?? (typeStars.has(symbol.name) && !valueStars.has(symbol.name));
-    exports.set(symbol.name, exportEntry(symbol.name, declaration, explicitType || (target.flags & ts.SymbolFlags.Value) === 0, target.name));
+    const declaredName = (declaration as ts.NamedDeclaration).name;
+    const localName = declaredName && ts.isIdentifier(declaredName) ? declaredName.text : target.name === "default" ? undefined : target.name;
+    exports.set(symbol.name, exportEntry(symbol.name, declaration, explicitType || (target.flags & ts.SymbolFlags.Value) === 0, localName));
   }
   return immutableCopy({ resource, mode: checker === undefined ? "syntax-only" : "configured-project", imports, exports: [...exports.values()] });
 };

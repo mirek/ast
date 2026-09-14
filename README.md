@@ -293,7 +293,10 @@ Configured-project analysis uses compiler module resolution (including path
 aliases and TypeScript's JavaScript-extension substitution) and the module's
 export table. Export aliases retain their public name and refer to the original
 declaration and its JSDoc, including variable-statement documentation. Type-only
-imports and re-exports remain distinguishable. Unresolved imports retain their
+imports and re-exports remain distinguishable. Default interfaces and local re-exports
+of type-only imports retain their type-only status in both modes. Named default
+exports keep their declaration's local name; anonymous defaults omit it.
+Unresolved imports retain their
 specifier without a fabricated target. The inventory includes static import
 declarations, external import-equals declarations, and re-exports; dynamic
 imports and CommonJS `require` calls are outside this inventory.
