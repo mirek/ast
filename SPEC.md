@@ -1247,6 +1247,9 @@ declarations, and re-export declarations, including repeated specifiers. Each
 entry records its kind, specifier, type-only status, and source origin. Only
 configured-project files expose compiler-resolved target URIs. Dynamic imports
 and CommonJS require expressions are not part of this inventory.
+Configured mode requires the opened source snapshot to belong to the captured
+compiler program. A file created after project capture remains syntax-only
+even if its path was listed in the project configuration.
 
 Configured-project exports use the compiler export table, preserving public
 aliases, original declaration names/kinds, type-only status, declaration

@@ -375,3 +375,22 @@ export default LocalType;
     } finally { await handle.close(); }
   }));
 }));
+
+
+test("files created after project capture retain syntax-only exports", async () => fixture(async (root) => {
+  await writeFile(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions: { module: "nodenext" }, files: ["seed.ts", "later.ts"] }));
+  await writeFile(join(root, "seed.ts"), "export const seed = 1;\n");
+  const adapter = createTypeScriptAdapter({ project: join(root, "tsconfig.json") });
+  const seed = await adapter.read.open({ uri: join(root, "seed.ts") }, {});
+  try { assert.equal((await adapter.moduleInfo(seed.resource)).mode, "configured-project"); }
+  finally { await seed.close(); }
+  await writeFile(join(root, "later.ts"), 'import { seed } from "./seed.js"; export const later = seed;\n');
+  const later = await adapter.read.open({ uri: join(root, "later.ts") }, {});
+  try {
+    const info = await adapter.moduleInfo(later.resource);
+    assert.equal(info.mode, "syntax-only");
+    assert.deepEqual(info.exports.map(item => item.name), ["later"]);
+    assert.equal(info.imports[0].resolvedUri, undefined);
+    assert.deepEqual(await adapter.moduleInfo(later.resource), info);
+  } finally { await later.close(); }
+}));
