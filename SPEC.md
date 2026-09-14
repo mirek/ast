@@ -1265,6 +1265,12 @@ documented variable statement inherits its statement's JSDoc when it lacks
 its own blocks. Binding elements walk through nested object/array patterns to
 their variable declaration and statement when inheriting JSDoc. Empty namespaces
 and namespaces containing only types remain type-only in both modes.
+Type-only module exports remain type-only through named and wildcard re-export
+chains and local imported aliases. The inventory follows captured compiler
+symbols and authored export routes, detects cycles, gives explicit exports
+precedence over wildcard exports, and retains value status when a value route
+also exists. This traversal does not read the current filesystem.
+
 Syntax-only analysis lists directly declared exports, exported import-equals
 declarations, and explicit export clauses,
 and infers TSX/JSX syntax from the source extension through the compiler,

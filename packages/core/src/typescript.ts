@@ -148,7 +148,7 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
     const cached = syntaxCheckers.get(state.sourceFile);
     if (cached) return cached;
     // Bind only the observed source. This host never reads dependencies or disk.
-    const sameFile = (path: string): boolean => canonicalPath(path) === state.path;
+    const sameFile = (path: string): boolean => ts.sys.useCaseSensitiveFileNames ? resolve(path) === state.path : resolve(path).toLowerCase() === state.path.toLowerCase();
     const program = ts.createProgram([state.path], { noLib: true, noResolve: true, allowJs: true, target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext }, {
       getSourceFile: path => sameFile(path) ? state.sourceFile : undefined,
       getDefaultLibFileName: () => "",

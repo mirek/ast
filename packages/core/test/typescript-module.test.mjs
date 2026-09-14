@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { createTypeScriptAdapter, select } from "@mirek/ast";
@@ -229,4 +230,40 @@ test("erased namespaces and destructured JSDoc agree in both analysis modes", as
       assert.deepEqual(await adapter.moduleInfo(handle.resource), info);
     } finally { await handle.close(); }
   }));
+}));
+
+
+test("syntax namespace binding performs no fresh filesystem canonicalization", async () => fixture(async (root) => {
+  await writeFile(join(root, "index.ts"), "export namespace Types { export interface Item {} }\n");
+  const adapter = createTypeScriptAdapter();
+  const handle = await adapter.read.open({ uri: join(root, "index.ts") }, {});
+  const original = realpathSync.native;
+  let reads = 0;
+  realpathSync.native = (...args) => { reads++; return original(...args); };
+  try {
+    assert.equal((await adapter.moduleInfo(handle.resource)).exports[0].typeOnly, true);
+    assert.equal(reads, 0);
+  } finally { realpathSync.native = original; await handle.close(); }
+}));
+
+test("type-only re-export chains preserve erasure and explicit value routes", async () => fixture(async (root) => {
+  await writeFile(join(root, "origin.ts"), "export class Foo {}\n");
+  await writeFile(join(root, "named.ts"), 'export type { Foo } from "./origin.js";\n');
+  await writeFile(join(root, "star.ts"), 'export type * from "./origin.js";\n');
+  await writeFile(join(root, "named-chain.ts"), 'export * from "./named.js";\n');
+  await writeFile(join(root, "star-chain.ts"), 'export * from "./star.js";\n');
+  await writeFile(join(root, "local.ts"), 'import { Foo } from "./star.js"; export { Foo };\n');
+  await writeFile(join(root, "mixed.ts"), 'export * from "./named.js"; export { Foo } from "./origin.js";\n');
+  await writeFile(join(root, "mixed-star.ts"), 'export * from "./named.js"; export * from "./origin.js";\n');
+  await writeFile(join(root, "cycle-a.ts"), 'export * from "./cycle-b.js";\n');
+  await writeFile(join(root, "cycle-b.ts"), 'export * from "./cycle-a.js"; export type { Foo } from "./origin.js";\n');
+  const inspect = async (file, expected) => {
+    const adapter = createTypeScriptAdapter({ project: join(root, "tsconfig.json") });
+    const handle = await adapter.read.open({ uri: join(root, file) }, {});
+    try { assert.equal((await adapter.moduleInfo(handle.resource)).exports.find(item => item.name === "Foo").typeOnly, expected, file); }
+    finally { await handle.close(); }
+  };
+  await Promise.all(["named-chain.ts", "star-chain.ts", "local.ts", "cycle-a.ts"].map(file => inspect(file, true)));
+  await inspect("mixed.ts", false);
+  await inspect("mixed-star.ts", false);
 }));

@@ -305,6 +305,12 @@ specifier without a fabricated target. The inventory includes static import
 declarations, external import-equals declarations, and re-exports; dynamic
 imports and CommonJS `require` calls are outside this inventory.
 
+Type-only module exports remain type-only through named and wildcard re-export
+chains and local imported aliases. The inventory follows captured compiler
+symbols and authored export routes, detects cycles, gives explicit exports
+precedence over wildcard exports, and retains value status when a value route
+also exists. This traversal does not read the current filesystem.
+
 Syntax-only files, including files outside the configured project, report
 TSX/JSX syntax using the compiler's extension inference. They report
 explicit exports, exported import-equals declarations and local export aliases; they do not resolve imports or
