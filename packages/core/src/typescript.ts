@@ -233,8 +233,8 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
     let state = files.get(absolute);
     if (state === undefined) {
       const text = await readFile(absolute, "utf8");
-      const scriptKind = absolute.endsWith(".js") || absolute.endsWith(".jsx") ? ts.ScriptKind.JS : ts.ScriptKind.TS;
-      const source = ts.createSourceFile(absolute, text, ts.ScriptTarget.Latest, true, scriptKind);
+      // Let the compiler infer TSX/JSX as well as TS/JS from the file extension.
+      const source = ts.createSourceFile(absolute, text, ts.ScriptTarget.Latest, true);
       state = await buildState(source, container);
       if (project !== undefined) diagnostics.push(defineDiagnostic({ code: "ts.outside-project", severity: "info", message: `${pathToFileURL(absolute).href} is outside the configured project and uses syntax-only mode.`, locations: [{ kind: "source", origin: { uri: pathToFileURL(absolute).href } }] }));
     } else if (container !== undefined) {

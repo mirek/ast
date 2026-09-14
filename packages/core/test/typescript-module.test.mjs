@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createTypeScriptAdapter } from "@mirek/ast";
+import { createTypeScriptAdapter, select } from "@mirek/ast";
 
 const fixture = async (run) => {
   const root = await mkdtemp(join(tmpdir(), "ast-module-"));
@@ -13,6 +13,49 @@ const fixture = async (run) => {
     return await run(root);
   } finally { await rm(root, { recursive: true, force: true }); }
 };
+
+test("syntax-only TSX and JSX modules use their file syntax", async () => fixture(async (root) => {
+  const inspect = async (extension) => {
+    const path = join(root, `view.${extension}`);
+    await writeFile(path, 'export const View = () => <main title="Welcome" />;\n');
+    const adapter = createTypeScriptAdapter();
+    const handle = await adapter.read.open({ uri: path }, {});
+    try {
+      assert.deepEqual((await adapter.moduleInfo(handle.resource)).exports.map(item => item.name), ["View"]);
+      assert.equal(adapter.diagnostics().some(item => item.severity === "error"), false);
+      assert.equal((await select(adapter, { uri: path }, 'ts::node[syntaxKind = "JsxSelfClosingElement"]').toArray()).length, 1);
+    } finally { await handle.close(); }
+  };
+  await inspect("tsx");
+  await inspect("jsx");
+}));
+
+test("module inventory handles CommonJS assignment, namespaces and multi-variable JSDoc", async () => fixture(async (root) => {
+  await writeFile(join(root, "values.ts"), '/** API values. */\nexport const first = 1, second = 2;\n');
+  await writeFile(join(root, "namespace.ts"), 'export * as values from "./values.js";\n');
+  await writeFile(join(root, "common.cts"), '/** Public class. */\nclass Foo { static answer = 42 }\nexport = Foo;\n');
+  const config = JSON.parse(await readFile(join(root, "tsconfig.json"), "utf8"));
+  config.include.push("*.cts");
+  await writeFile(join(root, "tsconfig.json"), JSON.stringify(config));
+  const verify = async (options) => {
+    const adapter = createTypeScriptAdapter(options);
+    const inspect = async (file) => {
+      const handle = await adapter.read.open({ uri: join(root, file) }, {});
+      try { return await adapter.moduleInfo(handle.resource); }
+      finally { await handle.close(); }
+    };
+    const common = await inspect("common.cts");
+    assert.deepEqual(common.exports.map(item => item.name), ["export="]);
+    const values = await inspect("values.ts");
+    assert.equal(values.exports.length, 2);
+    assert.equal(values.exports.every(item => item.documentation?.includes("API values")), true);
+    const namespace = await inspect("namespace.ts");
+    assert.equal(namespace.exports[0].name, "values");
+    assert.equal(namespace.exports[0].localName, undefined);
+  };
+  await verify({});
+  await verify({ project: join(root, "tsconfig.json") });
+}));
 
 test("default declarations and imported type-only aliases retain export identity in both modes", async () => fixture(async (root) => {
   await writeFile(join(root, "lib.ts"), 'export class Foo {}\nexport default class Bar {}\n');

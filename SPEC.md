@@ -1257,7 +1257,13 @@ Default interfaces are type-only in both modes. Local export clauses retain
 type-only imported bindings, including default, namespace, and named imports.
 Named default declarations use their declaration name as `localName`, not the
 compiler's synthetic `default` export name; anonymous defaults omit it.
+Namespace re-exports also omit localName, rather than exposing an internal
+module filename. CommonJS export assignment is one `export=` entry, never an
+expansion of the assigned class's static members. Every declarator in a
+documented variable statement inherits its statement's JSDoc when it lacks
+its own blocks.
 Syntax-only analysis lists directly declared exports and explicit export clauses,
+and infers TSX/JSX syntax from the source extension through the compiler,
 including local aliases, but does not expand wildcard re-exports or invent
 module resolution. Files outside the configured project use this latter mode.
 Import order is source order; export order is compiler export-table order or

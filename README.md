@@ -296,12 +296,16 @@ declaration and its JSDoc, including variable-statement documentation. Type-only
 imports and re-exports remain distinguishable. Default interfaces and local re-exports
 of type-only imports retain their type-only status in both modes. Named default
 exports keep their declaration's local name; anonymous defaults omit it.
+Namespace re-exports omit local names too. CommonJS export assignment appears
+as one `export=` entry, and all declarators in a documented variable statement
+inherit its JSDoc unless they have their own blocks.
 Unresolved imports retain their
 specifier without a fabricated target. The inventory includes static import
 declarations, external import-equals declarations, and re-exports; dynamic
 imports and CommonJS `require` calls are outside this inventory.
 
 Syntax-only files, including files outside the configured project, report
+TSX/JSX syntax using the compiler's extension inference. They report
 explicit exports and local export aliases; they do not resolve imports or
 expand wildcard re-exports. `mode` states this distinction on each result.
 Exports appear in compiler export-table order in project mode and source order

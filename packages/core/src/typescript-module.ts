@@ -45,7 +45,10 @@ const originFor = (node: ts.Node, resources: ReadonlyMap<string, Resource>): Ori
 };
 
 const documentationFor = (node: ts.Node): string | undefined => {
-  const blocks = ts.getJSDocCommentsAndTags(node).filter(ts.isJSDoc);
+  let blocks = ts.getJSDocCommentsAndTags(node).filter(ts.isJSDoc);
+  if (blocks.length === 0 && ts.isVariableDeclaration(node) && ts.isVariableDeclarationList(node.parent) && ts.isVariableStatement(node.parent.parent)) {
+    blocks = ts.getJSDocCommentsAndTags(node.parent.parent).filter(ts.isJSDoc);
+  }
   return blocks.length === 0 ? undefined : blocks.map(block => block.getText()).join("\n");
 };
 
@@ -144,13 +147,22 @@ export const moduleInfoFor = (
     }
   }
   const moduleSymbol = checker?.getSymbolAtLocation(source);
-  if (checker && moduleSymbol) for (const symbol of checker.getExportsOfModule(moduleSymbol)) {
+  const exportEquals = source.statements.find((node): node is ts.ExportAssignment => ts.isExportAssignment(node) && node.isExportEquals === true);
+  if (exportEquals) {
+    const expression = exportEquals.expression;
+    const symbol = checker?.getSymbolAtLocation(expression);
+    const target = symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0 ? checker?.getAliasedSymbol(symbol) : symbol;
+    const declaration = target?.declarations?.[0] ?? (ts.isIdentifier(expression) ? locals.get(expression.text) : undefined) ?? exportEquals;
+    exports.clear();
+    exports.set("export=", exportEntry("export=", declaration, ts.isInterfaceDeclaration(declaration) || ts.isTypeAliasDeclaration(declaration), ts.isIdentifier(expression) ? expression.text : undefined));
+  }
+  if (!exportEquals && checker && moduleSymbol) for (const symbol of checker.getExportsOfModule(moduleSymbol)) {
     const target = (symbol.flags & ts.SymbolFlags.Alias) !== 0 ? checker.getAliasedSymbol(symbol) : symbol;
     const declaration = target.declarations?.[0] ?? symbol.declarations?.[0];
     if (!declaration) continue;
     const explicitType = explicitExports.get(symbol.name) ?? (typeStars.has(symbol.name) && !valueStars.has(symbol.name));
     const declaredName = (declaration as ts.NamedDeclaration).name;
-    const localName = declaredName && ts.isIdentifier(declaredName) ? declaredName.text : target.name === "default" ? undefined : target.name;
+    const localName = declaredName && ts.isIdentifier(declaredName) ? declaredName.text : undefined;
     exports.set(symbol.name, exportEntry(symbol.name, declaration, explicitType || (target.flags & ts.SymbolFlags.Value) === 0, localName));
   }
   return immutableCopy({ resource, mode: checker === undefined ? "syntax-only" : "configured-project", imports, exports: [...exports.values()] });
