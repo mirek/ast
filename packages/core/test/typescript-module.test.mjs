@@ -394,3 +394,33 @@ test("files created after project capture retain syntax-only exports", async () 
     assert.deepEqual(await adapter.moduleInfo(later.resource), info);
   } finally { await later.close(); }
 }));
+
+
+test("ambient module routes preserve type-only stars and explicit value exports", async () => fixture(async (root) => {
+  await writeFile(join(root, "ambient.d.ts"), `
+declare module "pkg" { export class Foo {} }
+declare module "types" { export type * from "pkg"; }
+declare module "types" { export interface Extra {} }
+`);
+  await writeFile(join(root, "direct.ts"), 'export type * from "pkg";\n');
+  await writeFile(join(root, "chain.ts"), 'export * from "./direct.js";\n');
+  await writeFile(join(root, "ambient-chain.ts"), 'export * from "types";\n');
+  await writeFile(join(root, "local.ts"), 'import { Foo } from "types"; export { Foo };\n');
+  await writeFile(join(root, "mixed.ts"), 'export type * from "pkg"; export { Foo } from "pkg";\n');
+  await writeFile(join(root, "mixed-star.ts"), 'export type * from "pkg"; export * from "pkg";\n');
+  const adapter = createTypeScriptAdapter({ project: join(root, "tsconfig.json") });
+  const inspect = async (file, expected) => {
+    const handle = await adapter.read.open({ uri: join(root, file) }, {});
+    try {
+      const info = await adapter.moduleInfo(handle.resource);
+      assert.equal(info.exports.find(item => item.name === "Foo").typeOnly, expected, file);
+      if (file === "ambient-chain.ts") assert.equal(info.exports.find(item => item.name === "Extra").typeOnly, true);
+    } finally { await handle.close(); }
+  };
+  await inspect("direct.ts", true);
+  await inspect("chain.ts", true);
+  await inspect("ambient-chain.ts", true);
+  await inspect("local.ts", true);
+  await inspect("mixed.ts", false);
+  await inspect("mixed-star.ts", false);
+}));

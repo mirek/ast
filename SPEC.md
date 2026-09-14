@@ -1250,6 +1250,8 @@ and CommonJS require expressions are not part of this inventory.
 Configured mode requires the opened source snapshot to belong to the captured
 compiler program. A file created after project capture remains syntax-only
 even if its path was listed in the project configuration.
+Type-only export routes include ambient modules and their merged declarations,
+using captured module symbols without loading additional files.
 
 Configured-project exports use the compiler export table, preserving public
 aliases, original declaration names/kinds, type-only status, declaration
