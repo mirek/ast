@@ -1252,6 +1252,9 @@ compiler program. A file created after project capture remains syntax-only
 even if its path was listed in the project configuration.
 Type-only export routes include ambient modules and their merged declarations,
 using captured module symbols without loading additional files.
+For an ambient module target, resolvedUri identifies the containing source
+of its first captured module declaration. This is declaration provenance,
+not a promise that the URI is a runtime-loadable implementation.
 
 Configured-project exports use the compiler export table, preserving public
 aliases, original declaration names/kinds, type-only status, declaration

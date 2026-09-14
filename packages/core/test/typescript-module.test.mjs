@@ -415,6 +415,9 @@ declare module "types" { export interface Extra {} }
       const info = await adapter.moduleInfo(handle.resource);
       assert.equal(info.exports.find(item => item.name === "Foo").typeOnly, expected, file);
       if (file === "ambient-chain.ts") assert.equal(info.exports.find(item => item.name === "Extra").typeOnly, true);
+      for (const entry of info.imports.filter(item => item.specifier === "pkg" || item.specifier === "types")) {
+        assert.ok(entry.resolvedUri?.endsWith("/ambient.d.ts"), `${file}: ${entry.specifier}`);
+      }
     } finally { await handle.close(); }
   };
   await inspect("direct.ts", true);
@@ -423,4 +426,6 @@ declare module "types" { export interface Extra {} }
   await inspect("local.ts", true);
   await inspect("mixed.ts", false);
   await inspect("mixed-star.ts", false);
+  await rm(join(root, "ambient.d.ts"));
+  await inspect("direct.ts", true);
 }));

@@ -238,7 +238,8 @@ export const moduleInfoFor = (
       specifier = statement.moduleReference.expression; kind = "import-equals"; typeOnly = statement.isTypeOnly;
     }
     if (specifier && ts.isStringLiteralLike(specifier)) {
-      const resolved = checker?.getSymbolAtLocation(specifier)?.declarations?.find(ts.isSourceFile);
+      const declarations = checker?.getSymbolAtLocation(specifier)?.declarations;
+      const resolved = declarations?.find(ts.isSourceFile) ?? declarations?.find(ts.isModuleDeclaration)?.getSourceFile();
       imports.push({ kind, specifier: specifier.text, typeOnly, origin: originFor(statement, resources), ...(resolved === undefined ? {} : { resolvedUri: pathToFileURL(resolved.fileName).href }) });
     }
     if (checker !== undefined) {
