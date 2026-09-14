@@ -270,6 +270,47 @@ Out-of-project files are explicitly syntax-only, generated declaration files
 are read-only, and project references are diagnosed as unsupported by the
 initial adapter instead of being loaded incompletely.
 
+## TypeScript module inventory
+
+`TypeScriptAdapter.moduleInfo` projects an opened source snapshot into static
+imports/re-exports and exported names for repository inventory and knowledge
+extraction. It uses the same compiler and resource snapshots as graph traversal:
+
+```ts
+const adapter = createTypeScriptAdapter({ project: "tsconfig.json" });
+const handle = await adapter.read.open({ uri: "src/index.ts" }, {});
+try {
+  const module = await adapter.moduleInfo(handle.resource);
+  // module.imports: specifier, kind, typeOnly, origin, optional resolvedUri
+  // module.exports: public name, localName, typeOnly, declarationKind,
+  //                 origin, optional documentation (exact JSDoc blocks)
+} finally {
+  await handle.close();
+}
+```
+
+Configured-project analysis uses compiler module resolution (including path
+aliases and TypeScript's JavaScript-extension substitution) and the module's
+export table. Export aliases retain their public name and refer to the original
+declaration and its JSDoc, including variable-statement documentation. Type-only
+imports and re-exports remain distinguishable. Unresolved imports retain their
+specifier without a fabricated target. The inventory includes static import
+declarations, external import-equals declarations, and re-exports; dynamic
+imports and CommonJS `require` calls are outside this inventory.
+
+Syntax-only files, including files outside the configured project, report
+explicit exports and local export aliases; they do not resolve imports or
+expand wildcard re-exports. `mode` states this distinction on each result.
+Exports appear in compiler export-table order in project mode and source order
+in syntax-only mode. Imports remain in source order, including duplicates.
+Source offsets use UTF-16 and line/column positions are zero-based. Declaration
+origins carry revisions when their source is one of the adapter's observed
+resources; external compiler declarations can have a location without a revision.
+An inventory describes the opened snapshot, not a refreshed filesystem read.
+The supplied resource must match that snapshot, and an optional abort signal is
+checked before the synchronous compiler projection. Existing adapter diagnostics
+remain authoritative for syntax errors and unsupported project references.
+
 ## Stable adapter contract
 
 Adapters declare core contract version `1` plus an independent schema version.

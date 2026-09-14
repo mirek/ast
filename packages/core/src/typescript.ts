@@ -15,6 +15,8 @@ import type { EdgeRequest, NodeId, NodeSnapshot, Resource, Revision, SourceRange
 import type { CaptureMap, NavigableNodeHandle, Query } from "./query.js";
 import { defineAdapterSchema } from "./schema.js";
 import type { NodeKindSchema } from "./schema.js";
+import { moduleInfoFor } from "./typescript-module.js";
+import type { TypeScriptModuleInfo } from "./typescript-module.js";
 
 export type TypeScriptNodeKind = "ts::source-file" | "ts::function" | "ts::class" | "ts::variable" | "ts::call" | "ts::identifier" | "ts::import" | "ts::node";
 export type TypeScriptOperationKind = "ts::rename-symbol" | "ts::replace-call";
@@ -48,6 +50,8 @@ export interface TypeScriptAdapter extends Adapter {
   readonly mount: MountCapability;
   diagnostics(): readonly Diagnostic[];
   statistics(): TypeScriptStatistics;
+  /** Analyze an opened source snapshot; configured projects include compiler resolution. */
+  moduleInfo(resource: Resource, context?: OpenContext): Promise<TypeScriptModuleInfo>;
 }
 
 interface NodeRecord { readonly snapshot: NodeSnapshot; readonly node: ts.Node; readonly children: readonly string[]; readonly parent?: string; }
@@ -320,6 +324,13 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
     planning,
     apply,
     mount,
+    async moduleInfo(resource: Resource, context: OpenContext = {}) {
+      abort(context.signal);
+      const state = stateFor(resource.id);
+      if (resource.adapter !== "ts" || resource.uri !== state.resource.uri || resource.revision !== state.resource.revision) throw new TypeError("TypeScript module resource does not match its opened snapshot.");
+      const configured = projectFiles.includes(state.path) ? checker() : undefined;
+      return moduleInfoFor(state.sourceFile, state.resource, new Map([...files.values()].map(file => [file.resource.uri, file.resource])), configured, compilerOptions);
+    },
     diagnostics: () => Object.freeze([...diagnostics]),
     statistics: () => Object.freeze({ ...statistics }),
   });

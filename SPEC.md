@@ -1237,6 +1237,38 @@ YAML, TOML, Git, production database drivers, and remote-service adapters follow
 after the contracts have survived the required adapters. The injected-client
 SQL prototype below tests the database boundary without adding a driver.
 
+#### TypeScript module inventory
+
+The TypeScript adapter additionally exposes `moduleInfo(resource, context?)`
+for an opened resource snapshot. The returned immutable `TypeScriptModuleInfo`
+contains the resource, per-file analysis mode, source-ordered static imports,
+and exported names. Imports cover import declarations, external import-equals
+declarations, and re-export declarations, including repeated specifiers. Each
+entry records its kind, specifier, type-only status, and source origin. Only
+configured-project files expose compiler-resolved target URIs. Dynamic imports
+and CommonJS require expressions are not part of this inventory.
+
+Configured-project exports use the compiler export table, preserving public
+aliases, original declaration names/kinds, type-only status, declaration
+origins, and exact declaration JSDoc blocks with tags where present. Variable
+declarations inherit their statement's JSDoc through the compiler API.
+Type-only wildcard re-exports do not turn an exported class into a value export.
+Syntax-only analysis lists directly declared exports and explicit export clauses,
+including local aliases, but does not expand wildcard re-exports or invent
+module resolution. Files outside the configured project use this latter mode.
+Import order is source order; export order is compiler export-table order or
+source order respectively. This is an inventory projection, not a new graph
+edge role, mutation capability, or interpretation of arbitrary JavaScript.
+
+Locations carry UTF-16 offsets and zero-based line/column positions. Declaration
+revisions are present only for adapter-observed source resources; external
+compiler declarations can have locations without revisions. The resource
+identity, URI, adapter, and revision must match the opened snapshot. Analysis
+does not refresh that snapshot from disk. It checks cancellation before its
+synchronous compiler projection; adapter diagnostics retain their existing
+syntax-error and unsupported-project-reference behavior. Consumers requiring a
+complete valid inventory must inspect those diagnostics before publication.
+
 ### 17.2 Required runtime functionality
 
 - typed TypeScript query construction;
