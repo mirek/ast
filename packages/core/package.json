@@ -5,7 +5,9 @@
   "description": "Typed node-graph queries and change planning for heterogeneous resources.",
   "type": "module",
   "sideEffects": false,
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -27,6 +29,13 @@
     "typecheck": "tsc --build"
   },
   "dependencies": {
-    "typescript": "5.9.3"
+    "@prelude/async-generator": "2.0.1",
+    "@xberg-io/tree-sitter-language-pack-wasm": "1.20.0",
+    "typescript": "5.9.3",
+    "web-tree-sitter": "0.25.10"
+  },
+  "devDependencies": {
+    "@types/emscripten": "1.41.6",
+    "tree-sitter-wasms": "0.1.13"
   }
 }

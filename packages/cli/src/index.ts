@@ -12,6 +12,8 @@ import {
   compileDsl,
   createFilesystemAdapter,
   createJsonAdapter,
+  createTreeSitterAdapter,
+  treeSitterGrammars,
   createMarkdownAdapter,
   createTypeScriptAdapter,
   deserializeChangePlan,
@@ -29,6 +31,7 @@ import {
   markdownReplaceSection,
   markdownSetHeading,
   mountJson,
+  mountTreeSitter,
   mountMarkdown,
   mountTypeScript,
   renderChangePlan,
@@ -42,6 +45,8 @@ import type {
   ChangePlan,
   Diagnostic,
   DslArgumentSchema,
+  DslArgumentDefinition,
+  TreeSitterGrammar,
   DslArguments,
   DslEnvironment,
   FilesystemNodeKind,
@@ -102,6 +107,7 @@ interface CliConfig {
   readonly format?: "jsonl" | "pretty";
   readonly color?: "auto" | "always" | "never";
   readonly typescriptProject?: string;
+  readonly treeSitterGrammars?: readonly TreeSitterGrammar[];
   readonly plugins?: readonly CliPluginConfig[];
 }
 
@@ -117,6 +123,7 @@ interface ResolvedCliConfig {
   readonly color: "auto" | "always" | "never";
   readonly plugins: readonly CliPluginConfig[];
   readonly typescriptProject?: string;
+  readonly treeSitterGrammars?: readonly TreeSitterGrammar[];
 }
 
 class CliUsageError extends TypeError {
@@ -371,9 +378,25 @@ const validatePluginConfig = (value: unknown, index: number): CliPluginConfig =>
   });
 };
 
+const validateGrammarConfig = (value: unknown): readonly TreeSitterGrammar[] => {
+  if (!Array.isArray(value)) throw new CliConfigError("treeSitterGrammars must be an array.");
+  const strings = (input: unknown, label: string): readonly string[] => {
+    if (!Array.isArray(input)) throw new CliConfigError(`${label} must be an array.`);
+    return Object.freeze(input.map(item => configString(item, label)));
+  };
+  return Object.freeze(value.map((entry, index) => {
+    const label = `treeSitterGrammars[${index}]`;
+    const grammar = configRecord(entry, label);
+    validateKeys(grammar, ["name", "wasm", "extensions", "filenames"], label);
+    const wasm = configString(grammar.wasm, `${label}.wasm`);
+    if (/^[a-z]+:/iu.test(wasm) && !wasm.startsWith("file:")) throw new CliConfigError(`${label}.wasm must be a local path or file URL.`);
+    return Object.freeze({ name: configString(grammar.name, `${label}.name`), wasm, extensions: strings(grammar.extensions, `${label}.extensions`), ...(grammar.filenames === undefined ? {} : { filenames: strings(grammar.filenames, `${label}.filenames`) }) });
+  }));
+};
+
 const validateCliConfig = (value: unknown): CliConfig => {
   const config = configRecord(value, "CLI config");
-  validateKeys(config, ["format", "color", "typescriptProject", "plugins"], "CLI config");
+  validateKeys(config, ["format", "color", "typescriptProject", "treeSitterGrammars", "plugins"], "CLI config");
   if (config.format !== undefined && config.format !== "jsonl" && config.format !== "pretty") {
     throw new CliConfigError("CLI config format must be jsonl or pretty.");
   }
@@ -405,6 +428,7 @@ const validateCliConfig = (value: unknown): CliConfig => {
       ? {}
       : { typescriptProject: configString(config.typescriptProject, "CLI config typescriptProject") }),
     ...(plugins === undefined ? {} : { plugins }),
+    ...(config.treeSitterGrammars === undefined ? {} : { treeSitterGrammars: validateGrammarConfig(config.treeSitterGrammars) }),
   }) as CliConfig;
 };
 
@@ -438,6 +462,7 @@ const loadConfig = async (parsed: ParsedArguments, io: CliIo): Promise<ResolvedC
     format,
     color,
     plugins: file.plugins ?? Object.freeze([]),
+    ...(file.treeSitterGrammars === undefined ? {} : { treeSitterGrammars: Object.freeze(file.treeSitterGrammars.map(grammar => Object.freeze(Object.assign({}, grammar, { wasm: grammar.wasm!.startsWith("file:") ? grammar.wasm! : resolve(dirname(path), grammar.wasm!) })))) }),
     ...(typescriptProject === undefined ? {} : { typescriptProject }),
   });
 };
@@ -622,15 +647,28 @@ const requiredFilesystemContent = (
 const createRuntime = async (config: ResolvedCliConfig, cwd: string) => {
   const filesystem = createFilesystemAdapter();
   const json = createJsonAdapter();
+  let treesitter;
+  try {
+    const configured = config.treeSitterGrammars ?? [];
+    const replaced = new Set(configured.map(grammar => grammar.name));
+    treesitter = createTreeSitterAdapter({ grammars: [...treeSitterGrammars.filter(grammar => !replaced.has(grammar.name)), ...configured] });
+  } catch (error) { throw new CliConfigError(error instanceof Error ? error.message : String(error)); }
+  const treeSitterLanguage: DslArgumentDefinition = { type: "string", cardinality: "one", required: false, choices: treesitter.grammars.map(grammar => grammar.name) };
   const markdown = createMarkdownAdapter({ json });
   const typescript = createTypeScriptAdapter(
     config.typescriptProject === undefined ? {} : { project: config.typescriptProject },
   );
   const markdownTreeView = treeViewArgument(markdown);
-  const builtInAdapters: readonly Adapter[] = [filesystem, json, markdown, typescript];
+  const builtInAdapters: readonly Adapter[] = [filesystem, json, markdown, typescript, treesitter];
   const plugins = await loadPlugins(config.plugins, cwd, builtInAdapters.map(({ namespace }) => namespace));
   const adapters: readonly Adapter[] = Object.freeze([...builtInAdapters, ...plugins.adapters]);
   const builtInSources: DslEnvironment["sources"] = {
+    treesitter: {
+      adapter: treesitter,
+      selectorSource: "roots",
+      arguments: { uri: { type: "string", cardinality: "one", required: true }, language: treeSitterLanguage },
+      open: args => fromAdapter(treesitter, { uri: args.uri as string, options: args.language === undefined ? {} : { language: args.language as string } }),
+    },
     fs: {
       adapter: filesystem,
       selectorSource: "selection",
@@ -693,6 +731,11 @@ const createRuntime = async (config: ResolvedCliConfig, cwd: string) => {
     },
   };
   const builtInMounts: NonNullable<DslEnvironment["mounts"]> = {
+    treesitter: {
+      adapter: treesitter,
+      arguments: { language: treeSitterLanguage, onError: { type: "string", cardinality: "one", required: false, default: "skip", choices: ["skip", "throw"] } },
+      mount: (query, args) => mountTreeSitter(query, treesitter, { ...(args.language === undefined ? {} : { language: args.language as string }), onError: args.onError as "skip" | "throw" }),
+    },
     json: {
       adapter: json,
       arguments: {
@@ -775,7 +818,7 @@ const createRuntime = async (config: ResolvedCliConfig, cwd: string) => {
     ...builtInAdapters.map((adapter) => [adapter.namespace, adapter.schema] as const),
     ...Object.entries(plugins.schemas),
   ]));
-  return { adapters, environment, plugins, schemas, typescript };
+  return { adapters, environment, plugins, schemas, typescript, treesitter };
 };
 
 type CliInput =
@@ -897,7 +940,9 @@ export const runCli = async (args: readonly string[], io: CliIo): Promise<number
               ...(runtime.typescript.project === undefined ? {} : { project: runtime.typescript.project }),
             },
           }
-        : schema;
+        : namespace === "treesitter"
+          ? { ...schema, runtime: { grammars: runtime.treesitter.grammars } }
+          : schema;
       io.stdout.write(`${JSON.stringify(serializable(value), undefined, config.format === "pretty" ? 2 : undefined)}\n`);
       return EXIT.success;
     }

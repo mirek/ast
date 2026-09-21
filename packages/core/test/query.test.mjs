@@ -218,6 +218,26 @@ test("execution errors close opened resources", async () => {
   assert.equal(adapter.statistics().closed, 1);
 });
 
+test("buffer collection failures close every source even if another cleanup fails", async () => {
+  const memory = createInMemoryAdapter(treeFixture());
+  let closes = 0;
+  const adapter = { ...memory, read: { ...memory.read, async open(source, context) {
+    const handle = await memory.read.open(source, context);
+    return { resource: handle.resource, async close() {
+      await handle.close();
+      closes += 1;
+      if (closes === 1) throw new Error("first cleanup failed");
+    } };
+  } } };
+  const rows = fromValues([1, 2]).flatMap(() => fromAdapter(adapter, { uri: "memory:fixture" }));
+  await assert.rejects(sort(rows, () => 0).toArray(), /cleanup failed/u);
+  assert.equal(closes, 2);
+  assert.equal(memory.statistics().opened, memory.statistics().closed);
+  const failed = fromAdapter(memory, { uri: "memory:fixture" }).groupBy(() => { throw new Error("group key failed"); });
+  await assert.rejects(failed.toArray(), /group key failed/u);
+  assert.equal(memory.statistics().opened, memory.statistics().closed);
+});
+
 test("unknown source ordering is retained until an explicit sort", () => {
   const adapter = createInMemoryAdapter({ ...treeFixture(), ordering: "unknown" });
   const source = fromAdapter(adapter, { uri: "memory:fixture" });
@@ -234,4 +254,22 @@ test("functional capture is visible only to downstream callbacks", async () => {
   const result = project(source, (value, captures) => value + captures.original);
 
   assert.deepEqual(await result.toArray(), [2, 4]);
+});
+
+test('serial projections preserve captures, backpressure, and cleanup on failure', async () => {
+  let pulled = 0;
+  let closed = 0;
+  const source = fromValues(async function* () {
+    try { for (let index = 0; index < 4; index += 1) { pulled += 1; yield index; } }
+    finally { closed += 1; }
+  });
+  const query = source.capture('original').project(async (value, captures) => {
+    await Promise.resolve();
+    return [value * 2, captures.original];
+  });
+  assert.deepEqual(await query.take(1).toArray(), [[0, 0]]);
+  assert.equal(pulled, 1);
+  assert.equal(closed, 1);
+  await assert.rejects(source.project(() => { throw new Error('projection failed'); }).toArray(), /projection failed/);
+  assert.equal(closed, 2);
 });

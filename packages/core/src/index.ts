@@ -320,3 +320,5 @@ export type {
   TraversalCapability,
   TreeViewSchema,
 } from "./schema.js";
+export { createTreeSitterAdapter, mountTreeSitter, treeSitterGrammars } from "./treesitter.js";
+export type { TreeSitterAdapter, TreeSitterAdapterOptions, TreeSitterGrammar, TreeSitterMountOptions, TreeSitterStatistics } from "./treesitter.js";

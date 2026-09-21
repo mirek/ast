@@ -8,6 +8,7 @@ import {
   createJsonAdapter,
   createMarkdownAdapter,
   createTypeScriptAdapter,
+  createTreeSitterAdapter,
   validateAdapter,
 } from "@mirek/ast";
 
@@ -22,6 +23,7 @@ test("required adapters conform to contract version 1 with honest focused capabi
     createJsonAdapter(),
     createMarkdownAdapter(),
     createTypeScriptAdapter(),
+    createTreeSitterAdapter(),
   ];
   for (const adapter of adapters) {
     assert.doesNotThrow(() => validateAdapter(adapter));
@@ -36,6 +38,7 @@ test("required adapters conform to contract version 1 with honest focused capabi
   assert.equal(adapters[2].mount?.edge, "json::mount");
   assert.equal(adapters[3].mount?.edge, "markdown::mount");
   assert.equal(adapters[4].mount?.edge, "ts::mount");
+  assert.equal(adapters[5].mount?.edge, "treesitter::mount");
 });
 test("invalid capability declarations fail during adapter validation", () => {
   const filesystem = createFilesystemAdapter();

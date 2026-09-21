@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -506,7 +506,7 @@ test("apply failure policy distinguishes failed, dependent, stopped, and continu
         "| plan",
       ].join("\n");
       const preview = await run(["plan", "--expr", program, "--save", saved]);
-      assert.equal(preview.code, 0);
+      assert.equal(preview.code, 0, preview.stderr);
       const envelope = JSON.parse(await readFile(saved, "utf8"));
       const [failed, dependent, independent] = envelope.plan.transactionGroups;
       dependent.dependsOn = [failed.id];
@@ -588,7 +588,7 @@ test("explain, schema, and plugins are machine-readable", async () =>
     const schema = await run(["schema", "json"]);
     assert.equal(JSON.parse(schema.stdout).namespace, "json");
     const plugins = await run(["plugins"]);
-    assert.deepEqual(JSON.parse(plugins.stdout).builtIns.map(({ namespace }) => namespace), ["fs", "json", "markdown", "ts"]);
+    assert.deepEqual(JSON.parse(plugins.stdout).builtIns.map(({ namespace }) => namespace), ["fs", "json", "markdown", "ts", "treesitter"]);
   }));
 
 test("configuration precedence and usage exit codes are deterministic", async () =>
@@ -911,3 +911,107 @@ test("cancellation interrupts a blocked standard-input read", async () => {
   assert.equal(stdout, "");
   assert.equal(stderr, "");
 });
+
+test("Tree-sitter CLI queries monorepo Markdown and explicitly selected grammars", () => fixture(async root => {
+  await mkdir(join(root, 'packages', 'demo'), { recursive: true });
+  await writeFile(join(root, 'packages', 'demo', 'README.md'), '# Demo\n\n## Usage\n');
+  const result = await run(['query', '--expr', `from fs({ uri: ".", include: ["**/*.md"], kinds: ["fs::file"] }) | mount treesitter() | select 'fs::file as $file > treesitter::node treesitter::node[type = "atx_heading"]' | project { file: $file.path, heading: @text }`], { cwd: root });
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n').map(line => JSON.parse(line).value), [
+    { file: 'packages/demo/README.md', heading: '# Demo\n' },
+    { file: 'packages/demo/README.md', heading: '## Usage\n' },
+  ]);
+  await writeFile(join(root, 'script'), 'def hello(): pass\n');
+  const direct = await run(['query', '--expr', `from treesitter({ uri: "script", language: "python" }) | select 'treesitter::node[type = "identifier"]' | project { text: @text }`], { cwd: root });
+  assert.equal(direct.code, 0, direct.stderr);
+  assert.equal(JSON.parse(direct.stdout).value.text, 'hello');
+  const invalid = await run(['query', '--expr', 'from treesitter({ uri: "script", language: "no-such-grammar" })'], { cwd: root });
+  assert.equal(invalid.code, 2);
+  assert.match(invalid.stderr, /language/);
+  const schema = await run(['schema', 'treesitter'], { cwd: root });
+  assert.equal(schema.code, 0, schema.stderr);
+  assert.match(schema.stdout, /treesitter::children/);
+}));
+
+test('CLI loads custom grammar paths relative to the config file and validates registration', () => fixture(async root => {
+  const configDir = join(root, 'config');
+  await mkdir(configDir);
+  const grammar = fileURLToPath(new URL('../../core/node_modules/tree-sitter-wasms/out/tree-sitter-python.wasm', import.meta.url));
+  await writeFile(join(configDir, 'python.wasm'), await readFile(grammar));
+  const config = join(configDir, 'ast.json');
+  await writeFile(config, JSON.stringify({ treeSitterGrammars: [{ name: 'custom', wasm: './python.wasm', extensions: ['.custom'] }] }));
+  await writeFile(join(root, 'sample.custom'), 'x = 1\n');
+  const result = await run(['query', '--config', config, '--expr', 'from treesitter({ uri: "sample.custom" }) | select \'treesitter::node[type = "identifier"]\' | project { text: @text, language: @language }'], { cwd: root });
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).value, { text: 'x', language: 'custom' });
+  await writeFile(config, JSON.stringify({ treeSitterGrammars: [{ name: 'custom', wasm: './python.wasm', extensions: ['.py'] }] }));
+  const invalid = await run(['plugins', '--config', config], { cwd: root });
+  assert.equal(invalid.code, 1);
+  assert.match(invalid.stderr, /cli.invalid-config/);
+}));
+
+test('Tree-sitter schema inventories actual configured grammar coverage', async () => {
+  const result = await run(['schema', 'treesitter']);
+  assert.equal(result.code, 0, result.stderr);
+  const schema = JSON.parse(result.stdout);
+  assert.equal(schema.runtime.grammars.length, 31);
+  assert.ok(schema.runtime.grammars.some(grammar => grammar.name === 'markdown' && grammar.extensions.includes('.md')));
+});
+
+test('CLI mounts compose with directory navigation and return to another syntax view', () => fixture(async root => {
+  await mkdir(join(root, 'packages', 'demo'), { recursive: true });
+  await writeFile(join(root, 'packages', 'demo', 'README.md'), '# Demo\n');
+  const expression = `from fs({ uri: "." }) | mount markdown() | mount treesitter() | select 'fs::directory[name = "demo"] > fs::file[name = "README.md"] > markdown::document ->markdown::container fs::file as $file > treesitter::node treesitter::node[type = "atx_heading"]' | project { file: $file.path, heading: @text }`;
+  const result = await run(['query', '--expr', expression], { cwd: root });
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n').map(line => JSON.parse(line).value), [{ file: 'packages/demo/README.md', heading: '# Demo\n' }]);
+}));
+
+test('CLI ancestor queries navigate Markdown headings back to package directories', () => fixture(async root => {
+  await mkdir(join(root, 'packages', 'demo'), { recursive: true });
+  await writeFile(join(root, 'packages', 'demo', 'README.md'), '# Demo\n');
+  const expression = `from fs({ uri: ".", include: ["**/*.md"], kinds: ["fs::file"] }) | mount treesitter() | select 'treesitter::node[type = "atx_heading"] as $heading << fs::directory[name = "demo"]' | project { package: @path, heading: $heading.text }`;
+  const result = await run(['query', '--expr', expression], { cwd: root });
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).value, { package: 'packages/demo', heading: '# Demo\n' });
+  const explained = await run(['explain', '--expr', expression], { cwd: root });
+  assert.equal(explained.code, 0, explained.stderr);
+  assert.match(explained.stdout, /reverse/);
+  assert.match(explained.stdout, /prune/);
+}));
+
+test('CLI reverse siblings select preceding Markdown blocks', () => fixture(async root => {
+  await writeFile(join(root, 'README.md'), '# First\n\n# Second\n\n# Third\n');
+  const expression = `from markdown({ uri: "README.md" }) | select 'markdown::heading[title = "Third"] <~ markdown::heading' | project { heading: @title }`;
+  const result = await run(['query', '--expr', expression], { cwd: root });
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n').map(line => JSON.parse(line).value), [{ heading: 'Second' }, { heading: 'First' }]);
+}));
+
+test('CLI positional predicates select a child within each Markdown document', () => fixture(async root => {
+  await writeFile(join(root, 'a.md'), '# One\n\n# Two\n');
+  await writeFile(join(root, 'b.md'), '# Three\n\n# Four\n');
+  const expression = `from fs({ uri: ".", include: ["*.md"], kinds: ["fs::file"] }) | mount markdown() | select 'fs::file > markdown::document > markdown::heading:nth-child(2)' | project { heading: @title }`;
+  const result = await run(['query', '--expr', expression], { cwd: root });
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n').map(line => JSON.parse(line).value), [{ heading: 'Two' }, { heading: 'Four' }]);
+  const invalid = await run(['query', '--expr', expression.replace('nth-child(2)', 'nth-child(1.5)')], { cwd: root });
+  assert.equal(invalid.code, 2);
+  assert.match(invalid.stderr, /selector.position-formula/);
+}));
+
+test('CLI scope anchors direct files and nested relative projections', () => fixture(async root => {
+  await writeFile(join(root, 'data.json'), '{"nested":{"ok":true}}');
+  const expression = `from json({ uri: "data.json" }) | select ':scope > json::object' | project { uri: related("one", ':scope', @origin.uri), nested: related("one", ':scope > json::property[name = "nested"] > json::object > json::property > json::scalar', @value) }`;
+  const result = await run(['query', '--expr', expression], { cwd: root });
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).value, { uri: pathToFileURL(await realpath(join(root, 'data.json'))).href, nested: true });
+}));
+
+test('CLI sorting preserves node schemas and parser resources for later navigation', () => fixture(async root => {
+  await writeFile(join(root, 'file.py'), 'def second(): pass\ndef first(): pass\n');
+  const expression = `from fs({ uri: ".", include: ["*.py"], kinds: ["fs::file"] }) | mount treesitter() | select 'treesitter::node[type = "function_definition"]' | sort text | select ':scope > treesitter::node[field = "name"]' | project { name: @text }`;
+  const result = await run(['query', '--expr', expression], { cwd: root });
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n').map(line => JSON.parse(line).value), [{ name: 'first' }, { name: 'second' }]);
+}));
