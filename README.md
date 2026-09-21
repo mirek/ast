@@ -419,6 +419,8 @@ grammar with the same name; ambiguous extension or filename registrations are
 rejected. Optional `filenames` match exact basenames. Custom WASMs load through
 the pinned `web-tree-sitter` runtime and must be compatible with it. Neither
 backend downloads grammars during a query.
+Custom grammar paths may be relative or absolute local paths (including
+Windows drive and UNC paths), or file URLs; remote URI schemes are rejected.
 
 `ast schema treesitter` lists the active grammar registry alongside node and
 edge schemas, including configured extension and filename mappings.

@@ -68,6 +68,16 @@ test('Tree-sitter exposes a frozen extensible grammar registry', () => fixture(a
   assert.equal(nodes[0].snapshot.attributes.text, 'x');
 }));
 
+test('custom grammar configuration accepts Windows paths while rejecting remote URI schemes', () => {
+  for (const wasm of [String.raw`C:\grammars\custom.wasm`, 'C:/grammars/custom.wasm', String.raw`\\server\share\custom.wasm`, '/grammars/custom.wasm', './grammars/custom.wasm', 'file:///C:/grammars/custom.wasm']) {
+    const adapter = createTreeSitterAdapter({ grammars: [{ name: 'custom', wasm, extensions: ['.custom'] }] });
+    assert.equal(adapter.grammars[0].wasm, wasm);
+  }
+  for (const wasm of ['https://example.com/custom.wasm', 'git+https://example.com/custom.wasm', 'data:application/wasm;base64,AA==']) {
+    assert.throws(() => createTreeSitterAdapter({ grammars: [{ name: 'custom', wasm, extensions: ['.custom'] }] }), /local path or file URL/u);
+  }
+});
+
 test('every bundled grammar loads and parses with the pinned runtime', () => fixture(async root => {
   const uri = join(root, 'empty');
   await writeFile(uri, '');

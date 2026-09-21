@@ -1356,6 +1356,8 @@ The first useful release targets local, version-controlled repositories.
    - the immutable grammar registry maps exact filenames before extensions;
      explicit language selection permits extensionless or unusually named files;
    - compatible local custom WASMs load through a pinned web-tree-sitter runtime;
+     local paths include Windows drive and UNC paths; file URLs are accepted
+     and remote URI schemes are rejected;
      no grammar downloads occur during query execution;
    - all grammar nodes use `treesitter::node`. Attributes preserve `language`,
      native `type`, `text`, optional parent `field`, and `named`, `missing`,

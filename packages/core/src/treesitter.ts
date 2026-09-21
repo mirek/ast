@@ -2,7 +2,7 @@ import { closeQueryResource } from "./buffering.js";
 import { mountParentEdges } from "./mount.js";
 import { createHash } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
-import { basename, extname } from "node:path";
+import { basename, extname, win32 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createSyntaxParser } from "./treesitter-parser.js";
 import type { SyntaxNode, SyntaxTree } from "./treesitter-parser.js";
@@ -133,7 +133,7 @@ export const createTreeSitterAdapter = (options: TreeSitterAdapterOptions = {}):
   for (const grammar of grammars) {
     if (!/^[a-z][a-z0-9_-]*$/u.test(grammar.name) || names.has(grammar.name)) throw new TypeError(`Invalid or duplicate Tree-sitter grammar: ${grammar.name}`);
     names.add(grammar.name);
-    if (grammar.wasm !== undefined && (!grammar.wasm || (/^[a-z]+:/iu.test(grammar.wasm) && !grammar.wasm.startsWith("file:")))) throw new TypeError("Grammar WASM must be a local path or file URL.");
+    if (grammar.wasm !== undefined && (!grammar.wasm || (!win32.isAbsolute(grammar.wasm) && /^[a-z][a-z0-9+.-]*:/iu.test(grammar.wasm) && !grammar.wasm.startsWith("file:")))) throw new TypeError("Grammar WASM must be a local path or file URL.");
     for (const extension of grammar.extensions) {
       if (!/^\.[^./]+$/u.test(extension) || extensions.has(extension)) throw new TypeError(`Invalid or ambiguous grammar extension: ${extension}`);
       extensions.add(extension);
