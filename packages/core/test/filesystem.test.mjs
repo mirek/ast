@@ -193,3 +193,21 @@ test("filesystem traversal propagates cancellation and closes resources", async 
     assert.equal(adapter.statistics().opened, 1);
     assert.equal(adapter.statistics().closed, 1);
   }));
+
+test('reverse filesystem containment agrees with forward ordinals and stops at the resource root', () => fixture(async root => {
+  await writeFile(join(root, 'a.txt'), 'a');
+  await writeFile(join(root, 'b.txt'), 'b');
+  await writeFile(join(root, 'ignored.txt'), 'hidden');
+  const adapter = createFilesystemAdapter();
+  const [file] = await fromFilesystem(adapter, { uri: root, include: ['b.txt'], exclude: ['ignored.txt'] }).toArray();
+  const incoming = await Array.fromAsync(file.edges({ direction: 'reverse', roles: ['child'] }));
+  assert.equal(incoming.length, 1);
+  assert.equal(incoming[0].ordinal, 1);
+  const parent = await file.resolve(incoming[0].from);
+  const outgoing = await Array.fromAsync(parent.edges({ names: ['fs::children'] }));
+  assert.deepEqual(incoming[0], outgoing[1]);
+  assert.deepEqual(await Array.fromAsync(parent.edges({ direction: 'reverse' })), []);
+  assert.deepEqual(await Array.fromAsync(file.edges({ direction: 'reverse', roles: ['reference'] })), []);
+  const [direct] = await fromAdapter(adapter, { uri: join(root, 'b.txt') }).toArray();
+  assert.deepEqual(await Array.fromAsync(direct.edges({ direction: 'reverse' })), []);
+}));

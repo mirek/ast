@@ -988,7 +988,7 @@ const compilePipeline = (
     if (step.kind === "sort") {
       const names = step.source.slice("sort".length).split(",").map((name) => name.trim()).filter(Boolean);
       if (names.length === 0) return fail(program, "dsl.invalid-sort", "Expected one or more projected sort fields.", step.range);
-      state = { query: state.query.sort((left, right) => {
+      state = { ...state, query: state.query.sort((left, right) => {
         for (const name of names) {
           const result = compare(property(left, [name]), property(right, [name]));
           if (result !== 0) return result;

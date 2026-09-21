@@ -1,3 +1,5 @@
+import { closeQueryResource, collectWithResources } from "./buffering.js";
+import { map as mapAsync } from "@prelude/async-generator";
 import type { Adapter, SourceDescriptor } from "./adapter.js";
 import type {
   EdgeName,
@@ -69,6 +71,8 @@ export interface TraverseOptions {
   readonly direction?: EdgeRequest["direction"];
   readonly maxDepth: number;
   readonly includeSelf?: boolean;
+  /** Prune nodes already on the active traversal path; distinct paths retain duplicates. */
+  readonly cycle?: "allow" | "prune";
 }
 
 export interface NavigableNodeHandle extends NodeHandle {
@@ -286,16 +290,12 @@ export class Query<Value, Captures extends CaptureMap = EmptyCaptures>
         false,
         [parent],
         parent.captureNames,
-        (options) => ({
-          async *[Symbol.asyncIterator]() {
-            for await (const row of parent.execute(options)) {
-              throwIfAborted(options.signal);
-              const value = await projection(row.value, row.captures, options);
-              throwIfAborted(options.signal);
-              yield { value, captures: row.captures };
-            }
-          },
-        }),
+        (options) => mapAsync(async (row: QueryRow<Value, Captures>) => {
+          throwIfAborted(options.signal);
+          const value = await projection(row.value, row.captures, options);
+          throwIfAborted(options.signal);
+          return { value, captures: row.captures };
+        })(parent.execute(options)),
       ),
     );
   }
@@ -440,21 +440,29 @@ export class Query<Value, Captures extends CaptureMap = EmptyCaptures>
         new Set(),
         (options) => ({
           async *[Symbol.asyncIterator]() {
-            const groups = new Map<Key, Value[]>();
-            for await (const row of parent.execute(options)) {
-              throwIfAborted(options.signal);
-              const groupKey = await key(row.value, row.captures);
-              const values = groups.get(groupKey);
-              if (values === undefined) groups.set(groupKey, [row.value]);
-              else values.push(row.value);
-            }
-            for (const [groupKey, values] of groups) {
-              throwIfAborted(options.signal);
-              yield {
-                value: Object.freeze({ key: groupKey, values: Object.freeze(values) }),
-                captures: EMPTY_CAPTURES,
-              };
-            }
+            const buffer = await collectWithResources(async () => {
+              const groups = new Map<Key, Value[]>();
+              for await (const row of parent.execute(options)) {
+                throwIfAborted(options.signal);
+                const groupKey = await key(row.value, row.captures);
+                const values = groups.get(groupKey);
+                if (values === undefined) groups.set(groupKey, [row.value]);
+                else values.push(row.value);
+              }
+              return groups;
+            });
+            try {
+              for (const [groupKey, values] of buffer.value) {
+                throwIfAborted(options.signal);
+                yield {
+                  value: Object.freeze({ key: groupKey, values: Object.freeze(values) }),
+                  captures: EMPTY_CAPTURES,
+                };
+              }
+            } catch (error) {
+              await buffer.close({ error });
+              throw error;
+            } finally { await buffer.close(); }
           },
         }),
       ),
@@ -476,16 +484,24 @@ export class Query<Value, Captures extends CaptureMap = EmptyCaptures>
         parent.captureNames,
         (options) => ({
           async *[Symbol.asyncIterator]() {
-            const rows: QueryRow<Value, Captures>[] = [];
-            for await (const row of parent.execute(options)) {
-              throwIfAborted(options.signal);
-              rows.push(row);
-            }
-            const sortedRows = rows.toSorted((left, right) => compare(left.value, right.value));
-            for (const row of sortedRows) {
-              throwIfAborted(options.signal);
-              yield row;
-            }
+            const buffer = await collectWithResources(async () => {
+              const rows: QueryRow<Value, Captures>[] = [];
+              for await (const row of parent.execute(options)) {
+                throwIfAborted(options.signal);
+                rows.push(row);
+              }
+              return rows;
+            });
+            try {
+              const sortedRows = buffer.value.toSorted((left, right) => compare(left.value, right.value));
+              for (const row of sortedRows) {
+                throwIfAborted(options.signal);
+                yield row;
+              }
+            } catch (error) {
+              await buffer.close({ error });
+              throw error;
+            } finally { await buffer.close(); }
           },
         }),
       ),
@@ -547,28 +563,36 @@ export class Query<Value, Captures extends CaptureMap = EmptyCaptures>
         captureNames,
         (executeOptions) => ({
           async *[Symbol.asyncIterator]() {
-            const index = new Map<Key, QueryRow<Right, RightCaptures>[]>();
-            for await (const row of rightNode.execute(executeOptions)) {
-              throwIfAborted(executeOptions.signal);
-              const key = await options.rightKey(row.value);
-              const matches = index.get(key);
-              if (matches === undefined) index.set(key, [row]);
-              else matches.push(row);
-            }
-            for await (const left of leftNode.execute(executeOptions)) {
-              throwIfAborted(executeOptions.signal);
-              const key = await options.leftKey(left.value);
-              for (const rightRow of index.get(key) ?? []) {
-                const captures = Object.freeze({
-                  ...left.captures,
-                  ...rightRow.captures,
-                }) as Captures & RightCaptures;
-                yield {
-                  value: Object.freeze([left.value, rightRow.value] as const),
-                  captures,
-                };
+            const buffer = await collectWithResources(async () => {
+              const index = new Map<Key, QueryRow<Right, RightCaptures>[]>();
+              for await (const row of rightNode.execute(executeOptions)) {
+                throwIfAborted(executeOptions.signal);
+                const key = await options.rightKey(row.value);
+                const matches = index.get(key);
+                if (matches === undefined) index.set(key, [row]);
+                else matches.push(row);
               }
-            }
+              return index;
+            });
+            try {
+              for await (const left of leftNode.execute(executeOptions)) {
+                throwIfAborted(executeOptions.signal);
+                const key = await options.leftKey(left.value);
+                for (const rightRow of buffer.value.get(key) ?? []) {
+                  const captures = Object.freeze({
+                    ...left.captures,
+                    ...rightRow.captures,
+                  }) as Captures & RightCaptures;
+                  yield {
+                    value: Object.freeze([left.value, rightRow.value] as const),
+                    captures,
+                  };
+                }
+              }
+            } catch (error) {
+              await buffer.close({ error });
+              throw error;
+            } finally { await buffer.close(); }
           },
         }),
       ),
@@ -580,6 +604,9 @@ export class Query<Value, Captures extends CaptureMap = EmptyCaptures>
     options: TraverseOptions,
   ): Query<NavigableNodeHandle, Captures> {
     assertNaturalNumber("Traversal maximum depth", options.maxDepth);
+    if (options.cycle !== undefined && options.cycle !== "allow" && options.cycle !== "prune") {
+      throw new TypeError("Traversal cycle policy must be allow or prune.");
+    }
     const parent = this.#node;
     const edgeRequest: Omit<EdgeRequest, "signal"> = {
       ...(options.edgeNames === undefined ? {} : { names: options.edgeNames }),
@@ -594,6 +621,7 @@ export class Query<Value, Captures extends CaptureMap = EmptyCaptures>
           maxDepth: options.maxDepth,
           direction: options.direction ?? "forward",
           includeSelf: options.includeSelf ?? false,
+          ...(options.cycle === undefined ? {} : { cycle: options.cycle }),
         },
         false,
         [parent],
@@ -604,6 +632,7 @@ export class Query<Value, Captures extends CaptureMap = EmptyCaptures>
               node: NavigableNodeHandle,
               captures: Captures,
               depth: number,
+              path?: Set<string>,
             ): AsyncIterable<QueryRow<NavigableNodeHandle, Captures>> {
               if (depth >= options.maxDepth) return;
               for await (const edge of node.edges({
@@ -614,17 +643,23 @@ export class Query<Value, Captures extends CaptureMap = EmptyCaptures>
               })) {
                 throwIfAborted(executeOptions.signal);
                 const targetId = (options.direction ?? "forward") === "reverse" ? edge.from : edge.to;
+                const key = nodeIdKey(targetId);
+                if (path?.has(key)) continue;
                 const target = await node.resolve(targetId, executeOptions.signal);
                 if (target === undefined) continue;
-                yield { value: target, captures };
-                yield* descend(target, captures, depth + 1);
+                path?.add(key);
+                try {
+                  yield { value: target, captures };
+                  yield* descend(target, captures, depth + 1, path);
+                } finally { path?.delete(key); }
               }
             };
 
             for await (const row of parent.execute(executeOptions)) {
               throwIfAborted(executeOptions.signal);
               if (options.includeSelf === true) yield row;
-              yield* descend(row.value, row.captures, 0);
+              const path = options.cycle === "prune" ? new Set([nodeIdKey(row.value.snapshot.id)]) : undefined;
+              yield* descend(row.value, row.captures, 0, path);
             }
           },
         }),
@@ -721,7 +756,7 @@ export const fromAdapter = (
               yield { value: navigableHandle(read, snapshot), captures: EMPTY_CAPTURES };
             }
           } finally {
-            await handle.close();
+            await closeQueryResource(handle);
           }
         },
       }),

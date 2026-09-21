@@ -8,7 +8,7 @@ The repository contains the validated architecture specification, executable
 conformance suite, and a buildable TypeScript monorepo. `@mirek/ast` provides
 immutable graph, resource, schema, diagnostic, and capability contracts plus an
 executable lazy query algebra, selector compiler, local filesystem adapter, and
-lazily mounted JSON, Markdown, and TypeScript document adapters, textual DSL,
+lazily mounted JSON, Markdown, TypeScript, and Tree-sitter adapters, textual DSL,
 change planning, and the `ast` CLI.
 
 Read [SPEC.md](./SPEC.md) for the architecture. [TODO.md](./TODO.md) indexes the
@@ -35,6 +35,9 @@ combinators construct the same logical plan. Operators stream by default;
 plan. Execution propagates abort signals and closes adapter resources on normal
 completion, cancellation, and failure.
 
+Serial projections use `@prelude/async-generator` transforms with the runtime's
+capture and cancellation checks. They preserve backpressure and iterator cleanup.
+
 ```ts
 import { distinct, fromAdapter, project, take } from "@mirek/ast";
 
@@ -52,6 +55,14 @@ The public algebra includes filtering, projection, flat mapping, distinctness,
 limits, counting, grouping, sorting, captures, equality joins, and bounded tree
 or reference-edge traversal. `createInMemoryAdapter` supplies deterministic
 fixtures for adapter and selector development without filesystem effects.
+Sorting, grouping, and equality joins keep upstream resources alive while their
+buffered nodes can still be consumed. Navigation after buffering remains valid;
+completion, early return, and failures release those resources. This adds the
+retained parser/resource state to the memory cost of a buffering operator.
+Combined buffer-execution and cleanup failures retain both errors in an
+`AggregateError`, with the execution failure as its cause.
+In the DSL, `sort text` can sort syntax nodes by their `text` attribute without
+losing their schema or preventing a subsequent `select`.
 
 Selectors use namespaced kinds and edges and compile into that same algebra.
 Comparisons are checked against the adapter schema before execution; missing
@@ -59,6 +70,69 @@ attributes remain distinct from explicit `null` values.
 `selectFrom` treats its input as resource roots by default. Pass
 `{ sourceMode: "selection" }` for an already walked or otherwise preselected
 node stream so matching does not recursively traverse every input row again.
+
+Mounted views remain available after directory navigation and after returning
+through a container reference. For example, this query discovers a package
+directory, enters its Markdown document, returns to the file, and selects
+headings from its Tree-sitter view:
+
+```text
+from fs({ uri: "." })
+| mount markdown()
+| mount treesitter()
+| select 'fs::directory[name = "demo"] > fs::file[name = "README.md"] > markdown::document ->markdown::container fs::file as $file > treesitter::node treesitter::node[type = "atx_heading"]'
+| project { file: $file.path, heading: @text }
+```
+
+The same composition applies to JSON and TypeScript file mounts and JSON inside
+Markdown code blocks. Resolving directory entries or filtering files does not
+open their mounted contents.
+
+Use `<` to select a parent and `<<` to select ancestors. Both follow the selected
+tree view across mount boundaries. For example, locate headings and then recover
+the package directories that contain them:
+
+```text
+from fs({ uri: ".", include: ["**/*.md"], kinds: ["fs::file"] })
+| mount treesitter()
+| select 'treesitter::node[type = "atx_heading"] as $heading << fs::directory[name = "demo"]'
+| project { package: @path, heading: $heading.text }
+```
+
+Ancestors are nearest first in a tree and exclude the starting node. Cycles are
+pruned along each active path; separate paths retain duplicates until `distinct`.
+Filesystem parents stop at the opened resource root. In TypeScript, use
+`traverse({ direction: "reverse", roles: ["child"], edgeNames, maxDepth,
+cycle: "prune" })`; supply the selected view's containment edges and use depth
+one for parents. Omitting `cycle` retains bounded traversal with repeated nodes.
+
+Sibling navigation supports `+` (next), `~` (following), `<+` (previous), and
+`<~` (preceding, nearest first). These require ordered containment and use the
+selected tree view. For example,
+`markdown::heading[title = "Third"] <~ markdown::heading` returns preceding
+heading siblings in reverse order. Immediate-sibling operators inspect the
+adjacent node before applying its selector; they do not skip intervening nodes
+to find a match. The same operators work in relative `:has(...)` predicates.
+
+Select children by position with `:first-child`, `:last-child`, `:only-child`,
+`:nth-child(2)`, or `:nth-last-child(2)`. The `nth` forms also accept `odd`,
+`even`, and progressions such as `2n+1` or `-n + 3`. Positions are one-based
+within each parent's ordered child-edge group, counting all node kinds in the
+selected tree view. For example, `markdown::heading:nth-child(2)` matches a
+heading only if it is the second block, including paragraphs in the count.
+It does not select the second heading from the whole result stream. Roots with
+no containment parent do not match positional predicates.
+Only the active tree view's child edges must be ordered; unrelated tree views
+do not prevent positional or sibling selection.
+
+`:scope` explicitly matches a query's starting node. For example,
+`:scope > json::object` selects a direct child of a JSON root, and
+`json::scalar << :scope` returns that root from its scalar descendants. On a
+preselected stream, each row is its own starting node. Selecting `:scope` alone
+does not open mounted contents. In `:has(:scope > markdown::heading)`, the scope
+is the node being tested; nested `:is` and `:not` preserve their surrounding
+scope. A nested `related("one", ':scope', @origin.uri)` projection reads the
+current node's URI without searching descendants.
 
 ```ts
 import { select } from "@mirek/ast";
@@ -109,6 +183,12 @@ explicit `utf8` and `base64` encodings. Effects occur only when a validated plan
 is passed to the explicit `applyChangePlan` boundary.
 
 ## JSON adapter and mounts
+
+JSON and Markdown observations retain their original contents when a reused
+adapter reopens a changed file. Earlier node IDs keep resolving to the earlier
+revision, and stale edit planning produces a revision-conflict diagnostic with
+no changes. The adapter retains these observations for deferred planning
+throughout its lifetime, including read-only JSON embedded in Markdown.
 
 `createJsonAdapter` exposes roots, objects, properties, arrays, indices, and
 scalar values in deterministic source order. `mountJson` wraps a filesystem
@@ -226,16 +306,24 @@ constructs remain paragraph text, and no operation reformats unrelated source.
 ## TypeScript adapter
 
 `createTypeScriptAdapter` projects immutable compiler syntax snapshots. With a
-`project` path it creates one cached language service for the configured files
+`project` path it caches a language service for the unchanged configured files
 and exposes `ts::symbol` reference edges separately from `ts::children` syntax
 containment. Without a project, TypeScript and JavaScript remain queryable in
 syntax-only mode.
+
+Reopening a file observes its current revision. Configured projects also refresh
+when compiler inputs, configuration, or file membership change. Earlier handles
+keep their observed syntax, symbols, and mount container; rename planning rejects
+an outdated project. The adapter retains observations for deferred planning
+throughout its lifetime.
+Cross-file symbol targets retain their own source URI and do not acquire the
+referencing file as a filesystem parent.
 
 The CLI selects that same mode explicitly with `--project <tsconfig-path>` or
 with `typescriptProject` in `.astrc.json`. A command-line path resolves from the
 invocation working directory; a config value resolves from the directory that
 contains that config file; the command-line value wins. One adapter and
-language service are reused by direct `ts` sources, filesystem mounts, symbol
+cached project observation are reused by direct `ts` sources, filesystem mounts, symbol
 edges, and semantic rename planning for the invocation.
 
 ```sh
@@ -269,6 +357,80 @@ may use a newer compiler for its own build. Syntax errors have source ranges.
 Out-of-project files are explicitly syntax-only, generated declaration files
 are read-only, and project references are diagnosed as unsupported by the
 initial adapter instead of being loaded incompletely.
+
+## Tree-sitter grammars
+
+`createTreeSitterAdapter` exposes read-only syntax from the pinned
+[`tree-sitter-language-pack`](https://github.com/xberg-io/tree-sitter-language-pack)
+WASM package. The shipped registry contains 31 distinct grammars: Bash, C, C++,
+C#, CSS, Dockerfile, Elixir, Erlang, Go, Haskell, HTML, Java, JavaScript, JSON,
+Kotlin, Lua, Markdown, PHP, Python, Ruby, Rust, Scala, SQL, Svelte, Swift, TOML,
+TSX, TypeScript, Vue, YAML, and Zig. These are the grammars verified in the
+installed WASM release, not the larger native language-pack catalog.
+
+Every syntax node has kind `treesitter::node`, with `language`, grammar-native
+`type`, `text`, `named`, `missing`, `error`, and `hasError` attributes. A child
+also has `field` when its grammar names that relationship. Named nodes and
+anonymous punctuation retain source order. Ranges and zero-based columns use
+UTF-16 code units, so ranges index the original JavaScript text correctly.
+
+Find Markdown headings anywhere beneath a monorepo, retaining their file paths:
+
+```sh
+ast query --expr 'from fs({ uri: ".", include: ["**/*.md"], kinds: ["fs::file"] })
+| mount treesitter()
+| select "fs::file as $file > treesitter::node treesitter::node[type = \"atx_heading\"]"
+| project { file: $file.path, heading: @text }'
+```
+
+Direct files use `from treesitter({ uri: "script", language: "python" })`.
+Omit `language` to detect a registered filename or extension; supply it for
+extensionless files. In TypeScript the same source is
+`select(adapter, { uri: "script", options: { language: "python" } }, selector)`.
+`mountTreeSitter(files, adapter)` composes with `selectFrom` and the ordered
+`[filesystem.schema, adapter.schema]` schema chain.
+
+`treesitter::children` supports forward and reverse syntax navigation. A mounted
+root references its containing file through `treesitter::container`. Files are
+parsed only when traversal requests their mount. Unknown extensions are skipped
+by automatic mounts; direct sources report a missing grammar. Mount read/load
+failures warn and skip by default; `onError: "throw"` makes them fail the query.
+This includes files changed since their filesystem container was observed or
+while their bytes were being read.
+Malformed syntax remains queryable with a ranged recovery warning. Binary or
+invalid UTF-8 content is not interpreted as text. Semantic edits and TypeScript
+symbol analysis remain with their existing adapters.
+
+Custom compatible grammars can extend the library registry with
+`createTreeSitterAdapter({ grammars: [...treeSitterGrammars, { name: "custom",
+wasm: "/grammars/custom.wasm", extensions: [".custom"] }] })`.
+The CLI accepts the corresponding config:
+
+```json
+{
+  "treeSitterGrammars": [
+    { "name": "custom", "wasm": "./grammars/custom.wasm", "extensions": [".custom"] }
+  ]
+}
+```
+
+Config paths resolve relative to the config file. An entry replaces a built-in
+grammar with the same name; ambiguous extension or filename registrations are
+rejected. Optional `filenames` match exact basenames. Custom WASMs load through
+the pinned `web-tree-sitter` runtime and must be compatible with it. Neither
+backend downloads grammars during a query.
+Custom grammar paths may be relative or absolute local paths (including
+Windows drive and UNC paths), or file URLs; remote URI schemes are rejected.
+
+`ast schema treesitter` lists the active grammar registry alongside node and
+edge schemas, including configured extension and filename mappings.
+
+The grammar runtime loads on first use. Each opened file buffers its text and
+syntax tree, while graph snapshots are created as traversal requests them;
+closing the last resource lease frees the tree and its node handles. Identities
+include the language, containing file identity, content revision, and child path.
+Parsing is synchronous within a file: aborts are observed before and after it,
+and throughout asynchronous reading and graph traversal.
 
 ## Stable adapter contract
 
@@ -480,7 +642,7 @@ failure followed any effects. Acknowledgements cover the plan's risks, while
 cancellation interrupts the active adapter, leaves not-yet-started groups
 unscheduled, and exits 130. Flags override `AST_*`
 environment settings, which override `.astrc.json`. The config file is a closed,
-validated object containing only `format`, `color`, `typescriptProject`, and
+validated object containing only `format`, `color`, `typescriptProject`, `treeSitterGrammars`, and
 structurally validated plugin entries; malformed files, invalid environment
 enums, unknown fields, and
 duplicate plugin identities or aliases emit `cli.invalid-config` and exit 1

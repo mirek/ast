@@ -1,3 +1,4 @@
+import { closeQueryResource } from "./buffering.js";
 import { createHash } from "node:crypto";
 import {
   lstat,
@@ -9,7 +10,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { basename, extname, isAbsolute, matchesGlob, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, matchesGlob, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type {
@@ -644,7 +645,20 @@ export const createFilesystemAdapter = (
           const requestedRoles = request.roles;
           const direction = request.direction ?? "forward";
 
-          if (direction === "reverse") return;
+          if (direction === "reverse") {
+            if (node.local === "." ||
+                (requestedNames !== undefined && !requestedNames.includes("fs::children")) ||
+                (requestedRoles !== undefined && !requestedRoles.includes("child"))) return;
+            const parent = await observe(state, dirname(path), request.signal);
+            if (parent?.kind !== "fs::directory") return;
+            // Reuse forward enumeration so ignores and sibling ordinals agree.
+            for await (const edge of read.edges(parent.id, {
+              ...request, direction: "forward", names: ["fs::children"], roles: ["child"],
+            })) {
+              if (edge.to.local === node.local) { yield edge; break; }
+            }
+            return;
+          }
           if (
             snapshot.kind === "fs::directory" &&
             (requestedNames === undefined || requestedNames.includes("fs::children")) &&
@@ -1045,7 +1059,7 @@ export const createFilesystemAdapter = (
               yield navigable(snapshot);
             }
           } finally {
-            await handle.close();
+            await closeQueryResource(handle);
           }
         },
       };

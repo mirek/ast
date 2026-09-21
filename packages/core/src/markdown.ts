@@ -1,3 +1,5 @@
+import { closeQueryResource } from "./buffering.js";
+import { mountParentEdges } from "./mount.js";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
@@ -310,13 +312,15 @@ const revisionOf = (stat: Awaited<ReturnType<typeof lstat>>): Revision =>
   [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
 const sourcePath = (uri: string): string => uri.startsWith("file:") ? fileURLToPath(uri) : uri;
 const range = (start: number, end: number): SourceRange => ({ start, end });
-const resourceKey = (uri: string, view: MarkdownTreeView, container?: NodeSnapshot): string =>
+const resourceKey = (uri: string, revision: Revision, view: MarkdownTreeView, container?: NodeSnapshot): string =>
   createHash("sha256")
     .update(uri)
     .update("\0")
+    .update(revision)
+    .update("\0")
     .update(view)
     .update("\0")
-    .update(container === undefined ? "standalone" : `${container.id.resource}:${container.id.local}`)
+    .update(container === undefined ? "standalone" : JSON.stringify([container.id.adapter, container.id.resource, container.id.local]))
     .digest("base64url")
     .slice(0, 24);
 
@@ -798,8 +802,9 @@ const markdownHandle = (
 ): NavigableNodeHandle => {
   const base: NavigableNodeHandle = Object.freeze({
     snapshot,
-    edges(request: EdgeRequest = {}) {
-      return adapter.read.edges(snapshot.id, request);
+    async *edges(request: EdgeRequest = {}) {
+      yield* adapter.read.edges(snapshot.id, request);
+      if (snapshot.kind === "markdown::document") yield* mountParentEdges(snapshot, container?.snapshot, "markdown::mount", request);
     },
     async resolve(id: NodeId, signal?: AbortSignal) {
       throwIfAborted(signal);
@@ -866,18 +871,22 @@ const mountedFileHandle = (
               });
             }
           } finally {
-            await handle.close();
+            await closeQueryResource(handle);
           }
         },
       };
     },
     async resolve(id: NodeId, signal?: AbortSignal) {
-      if (id.adapter !== "markdown") return file.resolve(id, signal);
+      throwIfAborted(signal);
+      if (id.adapter !== "markdown") {
+        const resolved = await file.resolve(id, signal);
+        return resolved === undefined ? undefined : mountedFileHandle(resolved, adapter, json, treeView);
+      }
       const [resolved] = await adapter.read.hydrate([id], {
         attributes: [],
         ...(signal === undefined ? {} : { signal }),
       });
-      return resolved === undefined ? undefined : markdownHandle(adapter, resolved, file, json);
+      return resolved === undefined ? undefined : markdownHandle(adapter, resolved, mountedFileHandle(file, adapter, json, treeView), json);
     },
   });
 
@@ -948,7 +957,7 @@ export const createMarkdownAdapter = (
       statistics.parses += 1;
       const parsed = parseMarkdown(text);
       const resource = defineResource({
-        id: resourceKey(uri, view, container),
+        id: resourceKey(uri, revision, view, container),
         adapter: "markdown",
         uri,
         revision,
@@ -1208,7 +1217,7 @@ export const fromMarkdown = (
             yield markdownHandle(adapter, root, undefined, (adapter as MarkdownAdapter & { readonly mountedJson?: JsonAdapter }).mountedJson);
           }
         } finally {
-          await handle.close();
+          await closeQueryResource(handle);
         }
       },
     }),

@@ -38,9 +38,25 @@ importers:
 
   packages/core:
     dependencies:
+      '@prelude/async-generator':
+        specifier: 2.0.1
+        version: 2.0.1
+      '@xberg-io/tree-sitter-language-pack-wasm':
+        specifier: 1.20.0
+        version: 1.20.0
       typescript:
         specifier: 5.9.3
         version: 5.9.3
+      web-tree-sitter:
+        specifier: 0.25.10
+        version: 0.25.10(@types/emscripten@1.41.6)
+    devDependencies:
+      '@types/emscripten':
+        specifier: 1.41.6
+        version: 1.41.6
+      tree-sitter-wasms:
+        specifier: 0.1.13
+        version: 0.1.13
 
 packages:
 
@@ -166,6 +182,37 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@prelude/array@4.0.1':
+    resolution: {integrity: sha512-kMv44ISPyyUIQmeGu1L6MIP71beYdWyP7un7iyJnPsNkFeZ0/GQDkiN8WZlGm5zYSuE9rXIbQHb1ZutHLpz4tw==}
+    engines: {node: '>=22'}
+
+  '@prelude/async-generator@2.0.1':
+    resolution: {integrity: sha512-LwLagKAj6QVIuUk3Y7QtKBZ67W6YsXQF3XMIEoXSD0Pk9JYrwzBZXJmz6EUjhDlszbHnx4spF9lGgD4WfO4PHg==}
+    engines: {node: '>=22'}
+
+  '@prelude/channel@2.0.1':
+    resolution: {integrity: sha512-a0ffFrXMV5+pRkhaEcwsVBHNU4VlmVHxOyKzrVoY8+77H0Ga6O22DsMpSFrwIv43fqOtwEhpUs3UCWpqzZmPZQ==}
+    engines: {node: '>=22'}
+
+  '@prelude/cmp@5.0.1':
+    resolution: {integrity: sha512-N6JgmREqDQ1eQUK8uNdeQ3ECp+63iDkd9cVyG6/Fs+rNY9tufzHi4d5qmJ7jnoWt8hDOUuHNR4dCGu5XqF4KeA==}
+    engines: {node: '>=22'}
+
+  '@prelude/emitter@3.0.1':
+    resolution: {integrity: sha512-FT5TPsYvPgwEoVGegoJVtHiBgVwo3aCII4p1IxVEmXGNvmHmLMu+jBpyeMPIBpMx37pr8x4HSs2W/EVhjK1ojA==}
+    engines: {node: '>=22'}
+
+  '@prelude/err@1.0.1':
+    resolution: {integrity: sha512-PzOCHI49OxgbXGxg1wlWDIDdrAvWUD4miaU9/+Dc7yRPQRhNg6i6suxHyd4ajDFP0AvZ/n+wr35fjntPm1onDQ==}
+    engines: {node: '>=22'}
+
+  '@prelude/log@2.0.1':
+    resolution: {integrity: sha512-THL9fxB0T3sEHZq6eQuj//y5ggA/rhOfQzanWuZFZ+zUIn944sWhqOkUZh8yhHjoNTFL8BIePB9qHetg3kQSag==}
+    engines: {node: '>=22'}
+
+  '@types/emscripten@1.41.6':
+    resolution: {integrity: sha512-uN+9i8bFT5CUcZfyIEYDrSueACEyKGbUs5kC/72DGlZZoinh84sJfVV0i8UOJD1asdzkvLPBRrKs41kZ8MdEXg==}
+
   '@types/node@26.1.1':
     resolution: {integrity: sha512-nxAkRSVkN1Y0JC1W8ky/fTfkGsMmcrRsbx+3XoZE+rMOX71kLYTV7fLXpqud1GpbpP5TuffXFqfX7fH2GgZREw==}
 
@@ -289,6 +336,9 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@xberg-io/tree-sitter-language-pack-wasm@1.20.0':
+    resolution: {integrity: sha512-bbLMsnWkW6cfyiSvfLpWx3A08D2fhNkT3xSfb6Q/0tAnL6M/8B4eomKd1sIKyZtadqv9AfEuYiKXH4Am29fUHA==}
+
   oxlint@1.74.0:
     resolution: {integrity: sha512-odGl2s2x5IOJoj3A0v1k0PGBXVFBZeZ2+AK/+K2MJur7Ghi3bkyX5NuLUWHKqa4js1wjep3hJeuTQJOlr+4+dA==}
     engines: {node: ^20.19.0 || >=22.12.0}
@@ -302,6 +352,9 @@ packages:
       vite-plus:
         optional: true
 
+  tree-sitter-wasms@0.1.13:
+    resolution: {integrity: sha512-wT+cR6DwaIz80/vho3AvSF0N4txuNx/5bcRKoXouOfClpxh/qqrF4URNLQXbbt8MaAxeksZcZd1j8gcGjc+QxQ==}
+
   typescript@5.9.3:
     resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
     engines: {node: '>=14.17'}
@@ -314,6 +367,14 @@ packages:
 
   undici-types@8.3.0:
     resolution: {integrity: sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ==}
+
+  web-tree-sitter@0.25.10:
+    resolution: {integrity: sha512-Y09sF44/13XvgVKgO2cNDw5rGk6s26MgoZPXLESvMXeefBf7i6/73eFurre0IsTW6E14Y0ArIzhUMmjoc7xyzA==}
+    peerDependencies:
+      '@types/emscripten': ^1.40.0
+    peerDependenciesMeta:
+      '@types/emscripten':
+        optional: true
 
 snapshots:
 
@@ -373,6 +434,32 @@ snapshots:
 
   '@oxlint/binding-win32-x64-msvc@1.74.0':
     optional: true
+
+  '@prelude/array@4.0.1':
+    dependencies:
+      '@prelude/cmp': 5.0.1
+
+  '@prelude/async-generator@2.0.1':
+    dependencies:
+      '@prelude/channel': 2.0.1
+      '@prelude/emitter': 3.0.1
+
+  '@prelude/channel@2.0.1':
+    dependencies:
+      '@prelude/array': 4.0.1
+
+  '@prelude/cmp@5.0.1': {}
+
+  '@prelude/emitter@3.0.1':
+    dependencies:
+      '@prelude/err': 1.0.1
+      '@prelude/log': 2.0.1
+
+  '@prelude/err@1.0.1': {}
+
+  '@prelude/log@2.0.1': {}
+
+  '@types/emscripten@1.41.6': {}
 
   '@types/node@26.1.1':
     dependencies:
@@ -438,6 +525,8 @@ snapshots:
   '@typescript/typescript-win32-x64@7.0.2':
     optional: true
 
+  '@xberg-io/tree-sitter-language-pack-wasm@1.20.0': {}
+
   oxlint@1.74.0:
     optionalDependencies:
       '@oxlint/binding-android-arm-eabi': 1.74.0
@@ -459,6 +548,8 @@ snapshots:
       '@oxlint/binding-win32-arm64-msvc': 1.74.0
       '@oxlint/binding-win32-ia32-msvc': 1.74.0
       '@oxlint/binding-win32-x64-msvc': 1.74.0
+
+  tree-sitter-wasms@0.1.13: {}
 
   typescript@5.9.3: {}
 
@@ -486,3 +577,7 @@ snapshots:
       '@typescript/typescript-win32-x64': 7.0.2
 
   undici-types@8.3.0: {}
+
+  web-tree-sitter@0.25.10(@types/emscripten@1.41.6):
+    optionalDependencies:
+      '@types/emscripten': 1.41.6
