@@ -348,3 +348,22 @@ test('has scopes are local to their anchor and do not leak from nested predicate
   assert.deepEqual(await ids(select(adapter, source, 'memory::item:has(:scope > memory::leaf):not(:scope)')), ['alpha', 'beta', 'alpha', 'beta']);
   assert.deepEqual(await ids(select(adapter, source, ':scope:has(> memory::item:has(:scope > memory::leaf))')), ['root', 'root']);
 });
+
+test('positional and sibling validation uses only the active containment views', async () => {
+  const base = createInMemoryAdapter(fixture());
+  const adapter = { ...base, schema: {
+    ...base.schema,
+    capabilities: { ...base.schema.capabilities, ordering: 'unknown' },
+    edges: [...base.schema.edges, { name: 'memory::unordered', role: 'child', from: ['memory::root'], to: ['memory::item'], ordering: 'unknown' }],
+    treeViews: [
+      { name: 'memory::ordered', rootKinds: ['memory::root'], childEdges: ['memory::children'], default: true },
+      { name: 'memory::other', rootKinds: ['memory::root'], childEdges: ['memory::unordered'] },
+    ],
+  } };
+  const source = { uri: 'memory:selectors' };
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item:first-child')), ['alpha', 'alpha']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item:has(> memory::leaf:only-child)', { treeView: 'memory::ordered' })), ['alpha', 'beta', 'alpha', 'beta']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item + memory::item', { treeView: 'memory::ordered' })), ['beta', 'beta']);
+  assert.throws(() => select(adapter, source, 'memory::item:first-child', { treeView: 'memory::other' }), error => error.diagnostics[0].code === 'selector.unordered-position');
+  assert.throws(() => select(adapter, source, 'memory::item:has(+ memory::item)', { treeView: 'memory::other' }), error => error.diagnostics[0].code === 'selector.unordered-sibling');
+});

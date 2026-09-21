@@ -459,6 +459,9 @@ export class Query<Value, Captures extends CaptureMap = EmptyCaptures>
                   captures: EMPTY_CAPTURES,
                 };
               }
+            } catch (error) {
+              await buffer.close({ error });
+              throw error;
             } finally { await buffer.close(); }
           },
         }),
@@ -495,6 +498,9 @@ export class Query<Value, Captures extends CaptureMap = EmptyCaptures>
                 throwIfAborted(options.signal);
                 yield row;
               }
+            } catch (error) {
+              await buffer.close({ error });
+              throw error;
             } finally { await buffer.close(); }
           },
         }),
@@ -583,6 +589,9 @@ export class Query<Value, Captures extends CaptureMap = EmptyCaptures>
                   };
                 }
               }
+            } catch (error) {
+              await buffer.close({ error });
+              throw error;
             } finally { await buffer.close(); }
           },
         }),

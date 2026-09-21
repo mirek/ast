@@ -59,6 +59,8 @@ Sorting, grouping, and equality joins keep upstream resources alive while their
 buffered nodes can still be consumed. Navigation after buffering remains valid;
 completion, early return, and failures release those resources. This adds the
 retained parser/resource state to the memory cost of a buffering operator.
+Combined buffer-execution and cleanup failures retain both errors in an
+`AggregateError`, with the execution failure as its cause.
 In the DSL, `sort text` can sort syntax nodes by their `text` attribute without
 losing their schema or preventing a subsequent `select`.
 
@@ -120,6 +122,8 @@ selected tree view. For example, `markdown::heading:nth-child(2)` matches a
 heading only if it is the second block, including paragraphs in the count.
 It does not select the second heading from the whole result stream. Roots with
 no containment parent do not match positional predicates.
+Only the active tree view's child edges must be ordered; unrelated tree views
+do not prevent positional or sibling selection.
 
 `:scope` explicitly matches a query's starting node. For example,
 `:scope > json::object` selects a direct child of a JSON root, and

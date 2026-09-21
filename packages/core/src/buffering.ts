@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { ResourceHandle } from "./adapter.js";
 
 interface BufferResources { readonly handles: Set<ResourceHandle>; closed: boolean; }
+interface PrimaryFailure { readonly error: unknown; }
 
 // Collection runs upstream iterators to completion before emitting their rows.
 // Keep their resources alive until the outermost enclosing buffer is consumed.
@@ -17,13 +18,13 @@ export const closeQueryResource = async (handle: ResourceHandle): Promise<void> 
 
 export const collectWithResources = async <Value>(
   collect: () => Promise<Value>,
-): Promise<{ readonly value: Value; close(): Promise<void> }> => {
+): Promise<{ readonly value: Value; close(failure?: PrimaryFailure): Promise<void> }> => {
   const enclosing = collecting.getStore();
   if (enclosing !== undefined && !enclosing.closed) {
     return { value: await collect(), async close() {} };
   }
   const scope: BufferResources = { handles: new Set(), closed: false };
-  const close = async (): Promise<void> => {
+  const close = async (failure?: PrimaryFailure): Promise<void> => {
     if (scope.closed) return;
     scope.closed = true;
     const handles = [...scope.handles];
@@ -34,16 +35,14 @@ export const collectWithResources = async <Value>(
       await previous;
       try { await handle.close(); } catch (error) { errors.push(error); }
     }, Promise.resolve());
-    if (errors.length > 0) throw new AggregateError(errors, "Buffered resource cleanup failed.");
+    if (errors.length > 0) throw failure === undefined
+      ? new AggregateError(errors, "Buffered resource cleanup failed.")
+      : new AggregateError([failure.error, ...errors], "Buffered execution and cleanup failed.", { cause: failure.error });
   };
   try {
     return { value: await collecting.run(scope, collect), close };
   } catch (error) {
-    try { await close(); } catch (cleanup) {
-      // Both failures are retained; AggregateError takes options as its third argument.
-      // oxlint-disable-next-line preserve-caught-error
-      throw new AggregateError([error, cleanup], "Buffered collection and cleanup failed.", { cause: cleanup });
-    }
+    await close({ error });
     throw error;
   }
 };

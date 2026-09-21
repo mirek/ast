@@ -665,8 +665,11 @@ multiple parent relationships matches if any relationship satisfies the position
 Position formulas accept safe integer coefficients and offsets, `odd`, `even`,
 or an integer alone. A position matches when it equals `a*n+b` for some integer
 `n >= 0`; nonpositive positions never exist. Invalid formulas and unordered
-containment are diagnosed before execution. Matching from the start can stop
-at the requested position; matching from the end counts the complete sibling
+containment are diagnosed before execution. Only child edges in the active tree view participate
+in ordering validation, including in nested predicates and sibling selectors.
+Unrelated views and the ordering of the source rows do not affect local child
+positions. Matching from the start can stop at the requested position; matching
+from the end counts the complete sibling
 edge stream without hydrating sibling nodes. Captures, nested predicates,
 cancellation, and mount lifetimes retain the ordinary selector semantics.
 
@@ -947,7 +950,10 @@ of equality joins, including nested buffers and mounted parser resources.
 It preserves navigation and captures after upstream iteration ends. Buffer
 memory includes retained resource state as well as rows. Streaming execution
 keeps its existing per-source and per-mount cleanup boundaries. Cleanup attempts
-every retained close even if another close fails, and concurrent executions
+every retained close even if another close fails. When buffered collection or
+consumption and cleanup both fail, an `AggregateError` retains the primary
+failure followed by cleanup failures and exposes the primary failure as its
+cause. Concurrent executions
 have separate buffer ownership. DSL sorting preserves adapter/schema context
 when sorting node rows; selecting after a sort has the same semantics as the
 TypeScript algebra.

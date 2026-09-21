@@ -238,6 +238,40 @@ test("buffer collection failures close every source even if another cleanup fail
   assert.equal(memory.statistics().opened, memory.statistics().closed);
 });
 
+test("buffer consumption preserves primary and cleanup failures for sort, group, and join", async () => {
+  const primary = new Error("primary execution failure");
+  const cleanup = new Error("cleanup failure");
+  const memory = createInMemoryAdapter(treeFixture());
+  const adapter = { ...memory, read: { ...memory.read, async open(source, context) {
+    const handle = await memory.read.open(source, context);
+    return { resource: handle.resource, async close() { await handle.close(); throw cleanup; } };
+  } } };
+  const roots = fromAdapter(adapter, { uri: "memory:fixture" });
+  const controller = new AbortController();
+  let groupId = 0;
+  const grouped = roots.groupBy(() => groupId++);
+  const cases = [
+    sort(roots, () => { throw primary; }).toArray(),
+    fromValues([1]).join(roots, { leftKey: () => { throw primary; }, rightKey: () => 1 }).toArray(),
+    (async () => {
+      const iterator = grouped.iterate({ signal: controller.signal })[Symbol.asyncIterator]();
+      await iterator.next();
+      controller.abort(primary);
+      await iterator.next();
+    })(),
+  ];
+  await Promise.all(cases.map(promise => assert.rejects(promise, error => {
+    assert(error instanceof AggregateError);
+    assert(error.errors.includes(primary));
+    assert(error.errors.includes(cleanup));
+    assert.equal(error.cause, primary);
+    return true;
+  })));
+  // AsyncIteratorClose preserves an error thrown by a downstream callback.
+  await assert.rejects(sort(roots, () => 0).project(() => { throw primary; }).toArray(), error => error === primary);
+  assert.equal(memory.statistics().opened, memory.statistics().closed);
+});
+
 test("unknown source ordering is retained until an explicit sort", () => {
   const adapter = createInMemoryAdapter({ ...treeFixture(), ordering: "unknown" });
   const source = fromAdapter(adapter, { uri: "memory:fixture" });

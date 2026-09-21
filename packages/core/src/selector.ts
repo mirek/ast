@@ -772,6 +772,7 @@ const validateCompound = (
   captures: Map<string, CaptureType>,
   uri: string,
   extensions: Readonly<Record<string, SelectorExtensionPredicate>>,
+  treeView?: NamespacedName,
 ): void => {
   if (compound.kind !== undefined) validateName(compound.kind, "Kind", uri, compound.range);
   const selectedKind = kindSchema(schema, compound.kind);
@@ -827,7 +828,7 @@ const validateCompound = (
   for (const pseudo of compound.pseudos) {
     if (pseudo.kind === "scope") continue;
     if (pseudo.kind === "position") {
-      if (schema.capabilities.ordering !== "stable" || schema.edges.some(edge => edge.role === "child" && edge.ordering !== "stable")) {
+      if (!orderedChildren(schema, treeView)) {
         throw new SelectorError([diagnostic("selector.unordered-position", "Positional predicates require stable ordering on child edges.", uri, pseudo.range)]);
       }
       continue;
@@ -846,7 +847,7 @@ const validateCompound = (
       continue;
     }
     for (const sequence of pseudo.selectors) {
-      validateSequence(sequence, schema, new Map(captures), uri, extensions);
+      validateSequence(sequence, schema, new Map(captures), uri, extensions, treeView);
     }
   }
 
@@ -864,6 +865,7 @@ const validateCombinator = (
   combinator: SelectorCombinator,
   schema: AdapterSchema,
   uri: string,
+  treeView?: NamespacedName,
 ): void => {
   if (combinator.kind === "edge") {
     validateName(combinator.name, "Edge", uri, combinator.range);
@@ -876,8 +878,7 @@ const validateCombinator = (
   if (
     (combinator.kind === "adjacent-sibling" || combinator.kind === "following-sibling" ||
       combinator.kind === "previous-sibling" || combinator.kind === "preceding-sibling") &&
-    (schema.capabilities.ordering !== "stable" ||
-      schema.edges.some(({ role, ordering }) => role === "child" && ordering !== "stable"))
+    !orderedChildren(schema, treeView)
   ) {
     throw new SelectorError([
       diagnostic(
@@ -896,11 +897,12 @@ const validateSequence = (
   captures: Map<string, CaptureType>,
   uri: string,
   extensions: Readonly<Record<string, SelectorExtensionPredicate>>,
+  treeView?: NamespacedName,
 ): void => {
-  if (sequence.leading !== undefined) validateCombinator(sequence.leading, schema, uri);
+  if (sequence.leading !== undefined) validateCombinator(sequence.leading, schema, uri, treeView);
   for (const step of sequence.steps) {
-    if (step.combinator !== undefined) validateCombinator(step.combinator, schema, uri);
-    validateCompound(step.compound, schema, captures, uri, extensions);
+    if (step.combinator !== undefined) validateCombinator(step.combinator, schema, uri, treeView);
+    validateCompound(step.compound, schema, captures, uri, extensions, treeView);
   }
 };
 
@@ -908,9 +910,10 @@ export const validateSelector = (
   program: SelectorProgram,
   schema: SelectorSchema,
   predicates: Readonly<Record<string, SelectorExtensionPredicate>> = {},
+  treeView?: NamespacedName,
 ): void => {
   const resolved = resolveSelectorSchema(schema);
-  for (const sequence of program.selectors) validateSequence(sequence, resolved, new Map(), program.uri, predicates);
+  for (const sequence of program.selectors) validateSequence(sequence, resolved, new Map(), program.uri, predicates, treeView);
 };
 
 const childEdges = (
@@ -932,6 +935,9 @@ const childEdges = (
   }
   return tree?.childEdges ?? schema.edges.filter(({ role }) => role === "child").map(({ name }) => name);
 };
+
+const orderedChildren = (schema: AdapterSchema, treeView?: NamespacedName): boolean =>
+  childEdges(schema, treeView).every(name => schema.edges.find(edge => edge.name === name)?.ordering === "stable");
 
 const nodeIdEquals = (left: NodeHandle["snapshot"]["id"], right: NodeHandle["snapshot"]["id"]): boolean =>
   left.adapter === right.adapter && left.resource === right.resource && left.local === right.local;
@@ -1328,7 +1334,7 @@ export const selectFrom = (
 ): Query<NavigableNodeHandle, CaptureMap> => {
   const resolvedSchema = resolveSelectorSchema(schema);
   const program = typeof selector === "string" ? parseSelector(selector, options) : selector;
-  validateSelector(program, resolvedSchema, options.predicates);
+  validateSelector(program, resolvedSchema, options.predicates, options.treeView);
   const sequence = program.selectors[0];
   const parts = compositeParts.get(resolvedSchema);
   const firstKind = sequence?.steps[0]?.compound.kind;
