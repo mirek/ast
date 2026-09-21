@@ -1394,6 +1394,92 @@ Semantic YAML/TOML operations, Git, production database drivers, and remote-serv
 adapters remain outside the current built-in surface. The injected-client
 SQL prototype below tests the database boundary without adding a driver.
 
+#### TypeScript module inventory
+
+The TypeScript adapter additionally exposes `moduleInfo(resource, context?)`
+for an opened resource snapshot. The returned immutable `TypeScriptModuleInfo`
+contains the resource, per-file analysis mode, source-ordered static imports,
+and exported names. Imports cover import declarations, external import-equals
+declarations, and re-export declarations, including repeated specifiers. Each
+entry records its kind, specifier, type-only status, and source origin. Only
+configured-project files expose compiler-resolved target URIs. Dynamic imports
+and CommonJS require expressions are not part of this inventory.
+Configured mode requires the opened source snapshot to belong to the captured
+compiler program. Opening a newly created configured file refreshes the project
+observation and makes that file available in configured-project mode.
+Type-only export routes include ambient modules and their merged declarations,
+using captured module symbols without loading additional files.
+Circular wildcard routes remain unknown while terminating routes determine
+the export's type/value status.
+The resolver caches completed results for module/name pairs and resolves
+strongly connected components together, so shared barrel paths do not trigger
+repeated traversal and cycle-dependent partial answers are never cached.
+For an ambient module target, resolvedUri identifies the containing source
+of its first captured module declaration. This is declaration provenance,
+not a promise that the URI is a runtime-loadable implementation.
+
+Configured-project exports use the compiler export table, preserving public
+aliases, original declaration names/kinds, type-only status, declaration
+origins, and exact declaration JSDoc blocks with tags where present. Variable
+declarations inherit their statement's JSDoc through the compiler API.
+Type-only wildcard re-exports do not turn an exported class into a value export.
+Default interfaces are type-only in both modes. Local export clauses retain
+type-only imported bindings, including default, namespace, and named imports.
+Exported type-only import-equals aliases remain type-only in both modes,
+including aliases subsequently re-exported through `export =`.
+Internal import-equals aliases (`import Alias = NS.Member`) use the cached
+checker to retain their target's type/value status in syntax-only mode too.
+Default identifier exports reuse a known local declaration, including its JSDoc
+and aggregate type/value status.
+Named default declarations use their declaration name as `localName`, not the
+compiler's synthetic `default` export name; direct anonymous defaults omit it.
+When the resolved target has no declaration name, authored local export
+bindings provide localName, including default identifiers, local export clauses
+and exported import-equals bindings. Unresolved named export aliases retain
+their authored source name (`Foo` in `export { Foo as Bar }`). Direct namespace re-exports (`export * as ns`)
+omit localName even when the target is unresolved. CommonJS export assignment is one `export=` entry, never an
+expansion of the assigned class's static members. Every declarator in a
+documented variable statement inherits its statement's JSDoc when it lacks
+its own blocks. Destructured exports retain each leaf BindingElement's kind
+and range in both analysis modes. Binding elements walk through nested object/array patterns to
+their variable declaration and statement when inheriting JSDoc. Empty namespaces
+and namespaces containing only types remain type-only in both modes. Merged
+declaration names use their aggregate compiler symbol for value/type status;
+a following interface cannot erase a class value. Metadata and local alias
+origins retain the first declaration, matching configured mode.
+Type-only module exports remain type-only through named and wildcard re-export
+chains and local imported aliases. The inventory follows captured compiler
+symbols and authored export routes, detects cycles, gives explicit exports
+precedence over wildcard exports, and retains value status when a value route
+also exists. This traversal does not read the current filesystem.
+
+Syntax-only analysis lists directly declared exports, exported import-equals
+declarations, and explicit export clauses,
+and infers TSX/JSX syntax from the source extension through the compiler,
+including local aliases, but does not expand wildcard re-exports or invent
+module resolution. Interface/namespace value/type classification uses a lazy cached
+single-file compiler binder backed only by the observed source, with no disk
+reads or dependency resolution. This program contributes to the adapter
+programsCreated statistic. Files outside the configured project use this latter mode.
+Import order is source order; export order is compiler export-table order or
+source order respectively. This is an inventory projection, not a new graph
+edge role, mutation capability, or interpretation of arbitrary JavaScript.
+
+Locations carry UTF-16 offsets and zero-based line/column positions. Declaration
+revisions are present only when the compiler SourceFile matches an
+adapter-observed source snapshot; URI equality alone is insufficient. External
+compiler declarations can have locations without revisions. Import targets
+come from the captured compiler symbol graph, without consulting the current
+filesystem during projection. The resource
+identity, URI, adapter, and revision must match the opened snapshot. Analysis
+does not refresh that snapshot from disk.
+Reopening a source refreshes project membership and compiler inputs, while
+inventory calls on earlier resources retain their original exports, import
+targets, and declaration revisions. Analysis checks cancellation before its
+synchronous compiler projection; adapter diagnostics retain their existing
+syntax-error and unsupported-project-reference behavior. Consumers requiring a
+complete valid inventory must inspect those diagnostics before publication.
+
 ### 17.2 Required runtime functionality
 
 - typed TypeScript query construction;

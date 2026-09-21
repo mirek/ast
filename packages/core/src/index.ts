@@ -288,6 +288,7 @@ export {
   typeScriptRenameSymbol,
   typeScriptReplaceCall,
 } from "./typescript.js";
+export type { TypeScriptModuleInfo, TypeScriptModuleImport, TypeScriptModuleExport } from "./typescript-module.js";
 export type {
   TypeScriptAdapter,
   TypeScriptAdapterOptions,

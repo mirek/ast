@@ -45,6 +45,9 @@ from other kinds; diagnose invalid queries before opening their sources.
 When changing adapter caches, test reopened revisions, concurrent mounts, and
 earlier handles. TypeScript symbols and rename locations must belong to the
 same observed project; refreshes must not retarget an earlier syntax graph.
+Module inventories must use the resource’s captured project and source identities,
+including declaration revisions; test earlier inventories after reopening
+changed project inputs and syntax-only files.
 When changing sources, mounts, or buffering operators, preserve resource
 ownership through buffered navigation. Runtime-owned closes use
 `closeQueryResource`; buffers collect upstream under `collectWithResources`

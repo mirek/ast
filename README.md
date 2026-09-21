@@ -358,6 +358,75 @@ Out-of-project files are explicitly syntax-only, generated declaration files
 are read-only, and project references are diagnosed as unsupported by the
 initial adapter instead of being loaded incompletely.
 
+## TypeScript module inventory
+
+`TypeScriptAdapter.moduleInfo` projects an opened source snapshot into static
+imports/re-exports and exported names for repository inventory and knowledge
+extraction. It uses the same compiler and resource snapshots as graph traversal:
+
+```ts
+const adapter = createTypeScriptAdapter({ project: "tsconfig.json" });
+const handle = await adapter.read.open({ uri: "src/index.ts" }, {});
+try {
+  const module = await adapter.moduleInfo(handle.resource);
+  // module.imports: specifier, kind, typeOnly, origin, optional resolvedUri
+  // module.exports: public name, localName, typeOnly, declarationKind,
+  //                 origin, optional documentation (exact JSDoc blocks)
+} finally {
+  await handle.close();
+}
+```
+
+Configured-project analysis uses compiler module resolution (including path
+aliases and TypeScript's JavaScript-extension substitution) and the module's
+export table. Export aliases retain their public name and refer to the original
+declaration and its JSDoc, including variable-statement documentation. Type-only
+imports and re-exports remain distinguishable. Default interfaces and local re-exports
+of type-only imports retain their type-only status in both modes. Named default
+exports keep their declaration's local name; direct anonymous defaults omit it.
+Default identifier exports reuse known local declarations and their JSDoc.
+When a resolved target has no declaration name, authored local export bindings
+supply the local name. Direct `export * as ns` re-exports have no local binding
+and omit it. CommonJS export assignment appears
+as one `export=` entry, and all declarators in a documented variable statement
+inherit its JSDoc unless they have their own blocks. This includes nested
+object/array destructuring and rest bindings.
+Unresolved imports retain their
+specifier without a fabricated target. The inventory includes static import
+declarations, external import-equals declarations, and re-exports; dynamic
+imports and CommonJS `require` calls are outside this inventory.
+
+Type-only module exports remain type-only through named and wildcard re-export
+chains and local imported aliases. The inventory follows captured compiler
+symbols and authored export routes, detects cycles, gives explicit exports
+precedence over wildcard exports, and retains value status when a value route
+also exists. This traversal does not read the current filesystem.
+
+Syntax-only files, including files outside the configured project, report
+TSX/JSX syntax using the compiler's extension inference. They report
+explicit exports, exported import-equals declarations and local export aliases; they do not resolve imports or
+expand wildcard re-exports. `mode` states this distinction on each result.
+Exports appear in compiler export-table order in project mode and source order
+in syntax-only mode. Empty or type-only namespaces remain type-only in both
+modes. Merged names use their aggregate symbol for value/type status and keep
+the first declaration as their metadata source, including local export aliases.
+Syntax-only interface/namespace classification lazily caches a single-file compiler
+binder with an in-memory host; it does not read or resolve dependencies. Its
+program is included in `statistics().programsCreated`. Imports remain in source
+order, including duplicates.
+Source offsets use UTF-16 and line/column positions are zero-based. Declaration
+origins carry revisions only when their compiler SourceFile is the same snapshot
+as an adapter-observed resource; external compiler declarations can have a location without a revision.
+Import targets come from that captured compiler symbol graph, so adding or
+removing files after opening cannot silently change their resolved URIs.
+An inventory describes the opened snapshot, not a refreshed filesystem read.
+Reopening a source refreshes project membership and compiler inputs, while
+inventory calls on earlier resources retain their original exports, import
+targets, and declaration revisions.
+The supplied resource must match that snapshot, and an optional abort signal is
+checked before the synchronous compiler projection. Existing adapter diagnostics
+remain authoritative for syntax errors and unsupported project references.
+
 ## Tree-sitter grammars
 
 `createTreeSitterAdapter` exposes read-only syntax from the pinned
