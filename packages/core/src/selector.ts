@@ -8,6 +8,7 @@ import type {
   EdgeName,
   NamespacedName,
   NodeHandle,
+  NodeId,
   Scalar,
   SourceRange,
 } from "./model.js";
@@ -38,8 +39,12 @@ export interface SelectorExtensionPredicate {
 }
 
 export type SelectorCombinator =
+  | { readonly kind: "parent"; readonly range: SourceRange }
+  | { readonly kind: "ancestor"; readonly range: SourceRange }
   | { readonly kind: "child"; readonly range: SourceRange }
   | { readonly kind: "descendant"; readonly range: SourceRange }
+  | { readonly kind: "previous-sibling"; readonly range: SourceRange }
+  | { readonly kind: "preceding-sibling"; readonly range: SourceRange }
   | { readonly kind: "adjacent-sibling"; readonly range: SourceRange }
   | { readonly kind: "following-sibling"; readonly range: SourceRange }
   | {
@@ -106,6 +111,14 @@ export type SelectorAttributePredicate =
     };
 
 export type SelectorPseudo =
+  | { readonly kind: "scope"; readonly range: SourceRange }
+  | {
+      readonly kind: "position";
+      readonly name: "first-child" | "last-child" | "only-child" | "nth-child" | "nth-last-child";
+      readonly a: number;
+      readonly b: number;
+      readonly range: SourceRange;
+    }
   | {
       readonly kind: "not" | "is" | "has";
       readonly selectors: readonly SelectorSequence[];
@@ -341,6 +354,20 @@ class Parser {
     const start = this.#index;
     this.#index += 1;
     const name = this.#parseQualifiedName();
+    if (name === "scope") return { kind: "scope", range: { start, end: this.#index } };
+    if (name === "first-child" || name === "last-child" || name === "only-child") {
+      return { kind: "position", name, a: 0, b: 1, range: { start, end: this.#index } };
+    }
+    if (name === "nth-child" || name === "nth-last-child") {
+      this.#expect("(", `Expected \`(\` after :${name}.`);
+      const formulaStart = this.#index;
+      while (!this.#atEnd() && this.#peek() !== ")") this.#index += 1;
+      const formula = this.#source.slice(formulaStart, this.#index).trim();
+      const parsed = parsePositionFormula(formula);
+      if (parsed === undefined) this.#fail("selector.position-formula", "Expected an integer, odd, even, or an+b position formula.", formulaStart);
+      this.#expect(")", `Expected \`)\` after :${name}.`);
+      return { kind: "position", name, ...parsed, range: { start, end: this.#index } };
+    }
     this.#expect("(", `Expected \`(\` after :${name}.`);
     this.#skipWhitespace();
     if (name !== "not" && name !== "is" && name !== "has") {
@@ -374,8 +401,19 @@ class Parser {
       const name = this.#parseQualifiedName();
       return { kind: "edge", direction, name, range: { start, end: this.#index } };
     }
+    for (const [symbol, kind] of [["<+", "previous-sibling"], ["<~", "preceding-sibling"]] as const) {
+      if (this.#source.startsWith(symbol, this.#index)) {
+        this.#index += symbol.length;
+        return { kind, range: { start, end: this.#index } };
+      }
+    }
+    if (this.#source.startsWith("<<", this.#index)) {
+      this.#index += 2;
+      return { kind: "ancestor", range: { start, end: this.#index } };
+    }
     const symbol = this.#peek();
     this.#index += 1;
+    if (symbol === "<") return { kind: "parent", range: { start, end: this.#index } };
     if (symbol === ">") return { kind: "child", range: { start, end: this.#index } };
     if (symbol === "+") return { kind: "adjacent-sibling", range: { start, end: this.#index } };
     if (symbol === "~") return { kind: "following-sibling", range: { start, end: this.#index } };
@@ -522,7 +560,7 @@ class Parser {
   }
 
   #startsCombinator(): boolean {
-    return [">", "+", "~"].includes(this.#peek() ?? "") ||
+    return [">", "<", "+", "~"].includes(this.#peek() ?? "") ||
       this.#source.startsWith("->", this.#index) ||
       this.#source.startsWith("<-", this.#index);
   }
@@ -547,6 +585,21 @@ class Parser {
     ]);
   }
 }
+
+const parsePositionFormula = (formula: string): { readonly a: number; readonly b: number } | undefined => {
+  if (formula === "odd") return { a: 2, b: 1 };
+  if (formula === "even") return { a: 2, b: 0 };
+  if (/^[+-]?[0-9]+$/u.test(formula)) {
+    const b = Number(formula);
+    return Number.isSafeInteger(b) ? { a: 0, b } : undefined;
+  }
+  const match = /^([+-]?[0-9]*)n(?:\s*([+-])\s*([0-9]+))?$/iu.exec(formula);
+  if (match === null) return undefined;
+  const coefficient = match[1];
+  const a = coefficient === "" || coefficient === "+" ? 1 : coefficient === "-" ? -1 : Number(coefficient);
+  const b = Number(match[3] ?? 0) * (match[2] === "-" ? -1 : 1);
+  return Number.isSafeInteger(a) && Number.isSafeInteger(b) ? { a, b } : undefined;
+};
 
 const diagnostic = (code: string, message: string, uri: string, range: SourceRange): Diagnostic =>
   defineDiagnostic({
@@ -635,7 +688,9 @@ const attributeSchema = (
   kind: NodeKindSchema | undefined,
   attribute: string,
 ): AttributeSchema | undefined =>
-  kind?.attributes[attribute] ?? schema.kinds.map(({ attributes }) => attributes[attribute]).find(Boolean);
+  kind === undefined
+    ? schema.kinds.map(({ attributes }) => attributes[attribute]).find(Boolean)
+    : kind.attributes[attribute];
 
 const validateName = (
   name: string,
@@ -717,6 +772,7 @@ const validateCompound = (
   captures: Map<string, CaptureType>,
   uri: string,
   extensions: Readonly<Record<string, SelectorExtensionPredicate>>,
+  treeView?: NamespacedName,
 ): void => {
   if (compound.kind !== undefined) validateName(compound.kind, "Kind", uri, compound.range);
   const selectedKind = kindSchema(schema, compound.kind);
@@ -770,6 +826,13 @@ const validateCompound = (
   }
 
   for (const pseudo of compound.pseudos) {
+    if (pseudo.kind === "scope") continue;
+    if (pseudo.kind === "position") {
+      if (!orderedChildren(schema, treeView)) {
+        throw new SelectorError([diagnostic("selector.unordered-position", "Positional predicates require stable ordering on child edges.", uri, pseudo.range)]);
+      }
+      continue;
+    }
     if (pseudo.kind === "extension") {
       const extension = extensions[pseudo.name];
       if (extension === undefined) {
@@ -784,7 +847,7 @@ const validateCompound = (
       continue;
     }
     for (const sequence of pseudo.selectors) {
-      validateSequence(sequence, schema, new Map(captures), uri, extensions);
+      validateSequence(sequence, schema, new Map(captures), uri, extensions, treeView);
     }
   }
 
@@ -802,6 +865,7 @@ const validateCombinator = (
   combinator: SelectorCombinator,
   schema: AdapterSchema,
   uri: string,
+  treeView?: NamespacedName,
 ): void => {
   if (combinator.kind === "edge") {
     validateName(combinator.name, "Edge", uri, combinator.range);
@@ -812,9 +876,9 @@ const validateCombinator = (
     }
   }
   if (
-    (combinator.kind === "adjacent-sibling" || combinator.kind === "following-sibling") &&
-    (schema.capabilities.ordering !== "stable" ||
-      schema.edges.some(({ role, ordering }) => role === "child" && ordering !== "stable"))
+    (combinator.kind === "adjacent-sibling" || combinator.kind === "following-sibling" ||
+      combinator.kind === "previous-sibling" || combinator.kind === "preceding-sibling") &&
+    !orderedChildren(schema, treeView)
   ) {
     throw new SelectorError([
       diagnostic(
@@ -833,11 +897,12 @@ const validateSequence = (
   captures: Map<string, CaptureType>,
   uri: string,
   extensions: Readonly<Record<string, SelectorExtensionPredicate>>,
+  treeView?: NamespacedName,
 ): void => {
-  if (sequence.leading !== undefined) validateCombinator(sequence.leading, schema, uri);
+  if (sequence.leading !== undefined) validateCombinator(sequence.leading, schema, uri, treeView);
   for (const step of sequence.steps) {
-    if (step.combinator !== undefined) validateCombinator(step.combinator, schema, uri);
-    validateCompound(step.compound, schema, captures, uri, extensions);
+    if (step.combinator !== undefined) validateCombinator(step.combinator, schema, uri, treeView);
+    validateCompound(step.compound, schema, captures, uri, extensions, treeView);
   }
 };
 
@@ -845,15 +910,23 @@ export const validateSelector = (
   program: SelectorProgram,
   schema: SelectorSchema,
   predicates: Readonly<Record<string, SelectorExtensionPredicate>> = {},
+  treeView?: NamespacedName,
 ): void => {
   const resolved = resolveSelectorSchema(schema);
-  for (const sequence of program.selectors) validateSequence(sequence, resolved, new Map(), program.uri, predicates);
+  for (const sequence of program.selectors) validateSequence(sequence, resolved, new Map(), program.uri, predicates, treeView);
 };
 
 const childEdges = (
   schema: AdapterSchema,
   treeView?: NamespacedName,
 ): readonly EdgeName[] => {
+  const parts = compositeParts.get(schema);
+  if (treeView !== undefined && parts !== undefined) {
+    const owner = parts.find(part => part.treeViews.some(view => view.name === treeView));
+    if (owner === undefined) throw new TypeError(`Unknown tree view ${treeView}.`);
+    return uniqueNamed(parts.flatMap(part => childEdges(part, part === owner ? treeView : undefined)
+      .map(name => ({ name })))).map(({ name }) => name);
+  }
   const tree = treeView === undefined
     ? schema.treeViews.find(({ default: isDefault }) => isDefault === true) ?? schema.treeViews[0]
     : schema.treeViews.find(({ name }) => name === treeView);
@@ -862,6 +935,9 @@ const childEdges = (
   }
   return tree?.childEdges ?? schema.edges.filter(({ role }) => role === "child").map(({ name }) => name);
 };
+
+const orderedChildren = (schema: AdapterSchema, treeView?: NamespacedName): boolean =>
+  childEdges(schema, treeView).every(name => schema.edges.find(edge => edge.name === name)?.ordering === "stable");
 
 const nodeIdEquals = (left: NodeHandle["snapshot"]["id"], right: NodeHandle["snapshot"]["id"]): boolean =>
   left.adapter === right.adapter && left.resource === right.resource && left.local === right.local;
@@ -881,13 +957,16 @@ const traverseSingle = (
   treeView?: NamespacedName,
 ): Query<NavigableNodeHandle, CaptureMap> => {
   const treeEdges = childEdges(schema, treeView);
-  if (combinator.kind === "descendant") {
-    return query.traverse({ edgeNames: treeEdges, roles: ["child"], maxDepth: Number.MAX_SAFE_INTEGER });
+  if (combinator.kind === "descendant" || combinator.kind === "ancestor") {
+    return query.traverse({
+      edgeNames: treeEdges, roles: ["child"], maxDepth: Number.MAX_SAFE_INTEGER, cycle: "prune",
+      ...(combinator.kind === "ancestor" ? { direction: "reverse" } as const : {}),
+    });
   }
-  if (combinator.kind === "child" || combinator.kind === "edge") {
-    const direction = combinator.kind === "edge" ? combinator.direction : "forward";
+  if (combinator.kind === "child" || combinator.kind === "parent" || combinator.kind === "edge") {
+    const direction = combinator.kind === "edge" ? combinator.direction : combinator.kind === "parent" ? "reverse" : "forward";
     const names = combinator.kind === "edge" ? [combinator.name as EdgeName] : treeEdges;
-    const roles = combinator.kind === "child" ? (["child"] as const) : undefined;
+    const roles = combinator.kind === "edge" ? undefined : (["child"] as const);
     return query.flatMap(async function* (node, _captures, options) {
       for await (const edge of node.edges({
         names,
@@ -898,7 +977,7 @@ const traverseSingle = (
         const target = await resolveEdge(node, edge, direction, options.signal);
         if (target !== undefined) yield target;
       }
-    }, combinator.kind === "child" ? "selector child" : `selector ${direction} edge`);
+    }, combinator.kind === "edge" ? `selector ${direction} edge` : `selector ${combinator.kind}`);
   }
 
   return query.flatMap(async function* (node, _captures, options) {
@@ -922,12 +1001,13 @@ const traverseSingle = (
       }
       const position = siblings.findIndex(({ edge }) => nodeIdEquals(edge.to, node.snapshot.id));
       if (position < 0) continue;
-      const following = siblings.slice(position + 1);
-      if (combinator.kind === "adjacent-sibling") {
-        const adjacent = following[0];
+      const reverse = combinator.kind === "previous-sibling" || combinator.kind === "preceding-sibling";
+      const selected = reverse ? siblings.slice(0, position).toReversed() : siblings.slice(position + 1);
+      if (combinator.kind === "adjacent-sibling" || combinator.kind === "previous-sibling") {
+        const adjacent = selected[0];
         if (adjacent !== undefined) yield adjacent.node;
       } else {
-        for (const sibling of following) yield sibling.node;
+        for (const sibling of selected) yield sibling.node;
       }
     }
   }, `selector ${combinator.kind}`);
@@ -1023,6 +1103,42 @@ const matchesAttribute = (
   return valuesOf(value).some((candidate) => compareScalar(candidate, predicate.operator, right));
 };
 
+const matchesPosition = async (
+  node: NavigableNodeHandle,
+  pseudo: Extract<SelectorPseudo, { kind: "position" }>,
+  schema: AdapterSchema,
+  options: ExecuteOptions,
+  treeView?: NamespacedName,
+): Promise<boolean> => {
+  // BigInt keeps an+b exact at the limits of the accepted integer range.
+  const accepts = (position: number): boolean => {
+    const delta = BigInt(position) - BigInt(pseudo.b);
+    const step = BigInt(pseudo.a);
+    return step === 0n ? delta === 0n : delta % step === 0n && delta / step >= 0n;
+  };
+  const fromEnd = pseudo.name === "last-child" || pseudo.name === "nth-last-child";
+  const only = pseudo.name === "only-child";
+  const signal = options.signal === undefined ? {} : { signal: options.signal };
+  for await (const incoming of node.edges({ names: childEdges(schema, treeView), roles: ["child"], direction: "reverse", ...signal })) {
+    const parent = await node.resolve(incoming.from, options.signal);
+    if (parent === undefined) continue;
+    let count = 0;
+    const positions: number[] = [];
+    for await (const edge of parent.edges({ names: [incoming.name], roles: ["child"], ...signal })) {
+      options.signal?.throwIfAborted();
+      count += 1;
+      if (nodeIdEquals(edge.to, node.snapshot.id)) {
+        if (!fromEnd && !only && accepts(count)) return true;
+        positions.push(count);
+      }
+      if (only && count > 1) break;
+    }
+    if (only && count === 1 && positions.length > 0) return true;
+    if (fromEnd && positions.some(position => accepts(count - position + 1))) return true;
+  }
+  return false;
+};
+
 const matchesCompound = async (
   node: NavigableNodeHandle,
   captures: CaptureMap,
@@ -1036,6 +1152,17 @@ const matchesCompound = async (
   if (compound.kind !== undefined && node.snapshot.kind !== compound.kind) return false;
   if (!compound.attributes.every((predicate) => matchesAttribute(node, predicate, captures))) return false;
   for (const pseudo of compound.pseudos) {
+    if (pseudo.kind === "scope") {
+      const scope = scopes.get(node);
+      if (scope === undefined || !nodeIdEquals(node.snapshot.id, scope)) return false;
+      continue;
+    }
+    if (pseudo.kind === "position") {
+      // Predicates may open mounted parents; preserve serial resource ownership.
+      // oxlint-disable-next-line no-await-in-loop
+      if (!await matchesPosition(node, pseudo, schema, options, treeView)) return false;
+      continue;
+    }
     if (pseudo.kind === "extension") {
       const extension = extensions[pseudo.name];
       if (extension === undefined) return false;
@@ -1114,6 +1241,28 @@ const applyCompound = (
   return result;
 };
 
+// Scope is execution context carried by navigable handles, not a user capture.
+const scopes = new WeakMap<NavigableNodeHandle, NodeId>();
+const scopedHandle = (node: NavigableNodeHandle, scope = node.snapshot.id): NavigableNodeHandle => {
+  const handle: NavigableNodeHandle = Object.freeze({
+    snapshot: node.snapshot,
+    edges: (request = {}) => node.edges(request),
+    async resolve(id: NodeId, signal?: AbortSignal) {
+      signal?.throwIfAborted();
+      const resolved = await node.resolve(id, signal);
+      signal?.throwIfAborted();
+      return resolved === undefined ? undefined : scopedHandle(resolved, scope);
+    },
+  });
+  scopes.set(handle, scope);
+  return handle;
+};
+const usesScope = (sequence: SelectorSequence): boolean => sequence.steps.some(({ compound }) =>
+  compound.pseudos.some(pseudo => pseudo.kind === "scope" ||
+    ((pseudo.kind === "has" || pseudo.kind === "is" || pseudo.kind === "not") && pseudo.selectors.some(usesScope))));
+const anchorsScope = (sequence: SelectorSequence): boolean =>
+  sequence.leading === undefined && (sequence.steps[0]?.compound.pseudos.some(pseudo => pseudo.kind === "scope") ?? false);
+
 const compileAnchored = (
   node: NavigableNodeHandle,
   sequence: SelectorSequence,
@@ -1124,10 +1273,11 @@ const compileAnchored = (
   extensions: Readonly<Record<string, SelectorExtensionPredicate>> = {},
   uri = "selector:runtime",
 ): Query<NavigableNodeHandle, CaptureMap> => {
-  let query = fromValues([node]) as Query<NavigableNodeHandle, CaptureMap>;
+  const anchor = relative && usesScope(sequence) ? scopedHandle(node) : node;
+  let query = fromValues([anchor]) as Query<NavigableNodeHandle, CaptureMap>;
   const first = sequence.steps[0];
   if (first === undefined) return query.take(0);
-  const leading = sequence.leading ?? (relative ? { kind: "descendant", range: sequence.range } : undefined);
+  const leading = sequence.leading ?? (relative && !anchorsScope(sequence) ? { kind: "descendant", range: sequence.range } : undefined);
   if (leading !== undefined) query = traverseSingle(query, leading, schema, treeView);
   query = applyCompound(query, first.compound, schema, ambient, treeView, extensions, uri);
   for (const step of sequence.steps.slice(1)) {
@@ -1184,7 +1334,7 @@ export const selectFrom = (
 ): Query<NavigableNodeHandle, CaptureMap> => {
   const resolvedSchema = resolveSelectorSchema(schema);
   const program = typeof selector === "string" ? parseSelector(selector, options) : selector;
-  validateSelector(program, resolvedSchema, options.predicates);
+  validateSelector(program, resolvedSchema, options.predicates, options.treeView);
   const sequence = program.selectors[0];
   const parts = compositeParts.get(resolvedSchema);
   const firstKind = sequence?.steps[0]?.compound.kind;
@@ -1192,11 +1342,15 @@ export const selectFrom = (
     && firstKind !== undefined
     && responsibleSchema(resolvedSchema, firstKind) === parts[0]
     && sequence?.leading === undefined;
-  const roots = options.sourceMode === "selection" || anchorsContainer
-    ? source
-    : source.traverse({
+  const scopedSource = sequence !== undefined && usesScope(sequence)
+    ? source.project(node => scopedHandle(node), "selector scope")
+    : source;
+  const roots = options.sourceMode === "selection" || anchorsContainer || (sequence !== undefined && anchorsScope(sequence))
+    ? scopedSource
+    : scopedSource.traverse({
         edgeNames: childEdges(resolvedSchema, options.treeView),
         roles: ["child"],
+        cycle: "prune",
         maxDepth: Number.MAX_SAFE_INTEGER,
         includeSelf: true,
       });

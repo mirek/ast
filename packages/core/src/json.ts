@@ -1,3 +1,5 @@
+import { closeQueryResource } from "./buffering.js";
+import { mountParentEdges } from "./mount.js";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
@@ -347,12 +349,14 @@ const sourcePath = (uri: string): string =>
 const revisionOf = (stat: Awaited<ReturnType<typeof lstat>>): Revision =>
   [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
 
-const resourceKey = (uri: string, container: NodeSnapshot | undefined): string => {
+const resourceKey = (uri: string, revision: Revision, container: NodeSnapshot | undefined): string => {
   const owner = container === undefined
     ? "standalone"
     : `${container.id.adapter}\0${container.id.resource}\0${container.id.local}`;
   return createHash("sha256")
     .update("json\0")
+    .update(revision)
+    .update("\0")
     .update(uri)
     .update("\0")
     .update(owner)
@@ -1010,8 +1014,9 @@ const mountedJsonHandle = (
 ): NavigableNodeHandle =>
   Object.freeze({
     snapshot,
-    edges(request: EdgeRequest = {}) {
-      return adapter.read.edges(snapshot.id, request);
+    async *edges(request: EdgeRequest = {}) {
+      yield* adapter.read.edges(snapshot.id, request);
+      if (snapshot.kind === "json::root") yield* mountParentEdges(snapshot, container?.snapshot, "json::mount", request);
     },
     async resolve(id: NodeId, signal?: AbortSignal) {
       throwIfAborted(signal);
@@ -1100,20 +1105,24 @@ const mountedFilesystemHandle = (
               });
             }
           } finally {
-            await handle.close();
+            await closeQueryResource(handle);
           }
         },
       };
     },
     async resolve(id: NodeId, signal?: AbortSignal) {
-      if (id.adapter !== "json") return file.resolve(id, signal);
+      throwIfAborted(signal);
+      if (id.adapter !== "json") {
+        const resolved = await file.resolve(id, signal);
+        return resolved === undefined ? undefined : mountedFilesystemHandle(resolved, adapter, onError);
+      }
       const [resolved] = await adapter.read.hydrate([id], {
         attributes: [],
         ...(signal === undefined ? {} : { signal }),
       });
       return resolved === undefined
         ? undefined
-        : mountedJsonHandle(adapter, resolved, file);
+        : mountedJsonHandle(adapter, resolved, mountedFilesystemHandle(file, adapter, onError));
     },
   });
 
@@ -1160,7 +1169,7 @@ export const mountJsonTextHandle = (
               });
             }
           } finally {
-            await handle.close();
+            await closeQueryResource(handle);
           }
         },
       };
@@ -1173,7 +1182,7 @@ export const mountJsonTextHandle = (
       });
       return resolved === undefined
         ? undefined
-        : mountedJsonHandle(adapter, resolved, container);
+        : mountedJsonHandle(adapter, resolved, mountJsonTextHandle(container, adapter, source, options));
     },
   });
 
@@ -1318,7 +1327,7 @@ export const createJsonAdapter = (): JsonAdapter => {
         return undefined;
       }
       const resource = defineResource({
-        id: resourceKey(uri, container),
+        id: resourceKey(uri, revision, container),
         adapter: "json",
         uri,
         revision,
@@ -1385,7 +1394,7 @@ export const createJsonAdapter = (): JsonAdapter => {
     }
     const revision = source.revision ?? createHash("sha256").update(source.text).digest("base64url");
     const resource = defineResource({
-      id: resourceKey(source.uri, container),
+      id: resourceKey(source.uri, revision, container),
       adapter: "json",
       uri: source.uri,
       revision,

@@ -1,5 +1,7 @@
+import { closeQueryResource } from "./buffering.js";
+import { mountParentEdges } from "./mount.js";
 import { createHash, randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { lstat, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -55,7 +57,17 @@ export interface TypeScriptAdapter extends Adapter {
 }
 
 interface NodeRecord { readonly snapshot: NodeSnapshot; readonly node: ts.Node; readonly children: readonly string[]; readonly parent?: string; }
-interface FileState { readonly resource: Resource; readonly path: string; readonly text: string; readonly sourceFile: ts.SourceFile; readonly nodes: ReadonlyMap<string, NodeRecord>; readonly container?: NodeSnapshot; }
+interface FileState { readonly resource: Resource; readonly path: string; readonly text: string; readonly sourceFile: ts.SourceFile; readonly nodes: ReadonlyMap<string, NodeRecord>; readonly container?: NodeSnapshot; readonly project?: ProjectState; }
+interface FileObservation { readonly text: string; readonly revision: Revision; }
+interface ProjectState {
+  readonly key: string;
+  readonly service: ts.LanguageService;
+  readonly program: ts.Program;
+  readonly files: Map<string, FileState>;
+  readonly inputs: ReadonlyMap<string, FileObservation | undefined>;
+  readonly existence: ReadonlyMap<string, boolean>;
+  readonly configuration: string;
+}
 interface Internals { openMounted(container: NodeSnapshot, context: OpenContext): Promise<ResourceHandle | undefined>; }
 const adapterInternals = new WeakMap<TypeScriptAdapter, Internals>();
 
@@ -96,6 +108,19 @@ const canonicalPath = (path: string): string => {
   catch { return absolute; }
 };
 const idFor = (path: string): string => createHash("sha256").update(path).digest("base64url").slice(0, 24);
+const observeFile = (path: string): FileObservation => {
+  const revision = revisionOf(lstatSync(path));
+  const text = readFileSync(path, "utf8");
+  if (revisionOf(lstatSync(path)) !== revision) throw new Error(`TypeScript source changed while reading ${pathToFileURL(path).href}.`);
+  return Object.freeze({ text, revision });
+};
+const currentRevision = (path: string): Revision | undefined => {
+  try { return revisionOf(lstatSync(path)); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR") return undefined;
+    throw error;
+  }
+};
 const localFor = (node: ts.Node): string => `${node.kind}:${node.pos}:${node.end}`;
 const nodeKind = (node: ts.Node): TypeScriptNodeKind => {
   if (ts.isSourceFile(node)) return "ts::source-file";
@@ -132,16 +157,25 @@ export const typeScriptReplaceCall = (call: NodeSnapshot, callee: string): TypeS
   return immutableCopy({ kind: "ts::replace-call", ...operationTarget(call), payload: { callee } });
 };
 
+const canonicalSymbol = (state: FileState, node: ts.Node): ts.Symbol | undefined => {
+  const checker = state.project?.program.getTypeChecker();
+  const value = checker?.getSymbolAtLocation(node);
+  if (value === undefined) return undefined;
+  return (value.flags & ts.SymbolFlags.Alias) !== 0 ? checker?.getAliasedSymbol(value) : value;
+};
+const findNodeId = (state: FileState, node: ts.Node): NodeId | undefined => {
+  const path = canonicalPath(node.getSourceFile().fileName);
+  return (path === state.path ? state : state.project?.files.get(path))?.nodes.get(localFor(node))?.snapshot.id;
+};
+
 export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}): TypeScriptAdapter => {
   const project = options.project === undefined ? undefined : canonicalPath(options.project);
-  const files = new Map<string, FileState>();
   const resources = new Map<string, FileState>();
+  const syntaxSources = new Map<string, ts.SourceFile>();
+  const reportedSources = new WeakSet<ts.SourceFile>();
   const diagnostics: Diagnostic[] = [];
   const statistics = { programsCreated: 0, sourceFilesParsed: 0, nodesProjected: 0, opened: 0, closed: 0 };
-  let service: ts.LanguageService | undefined;
-  let projectFiles: readonly string[] = [];
-  let compilerOptions: ts.CompilerOptions = {};
-  const versions = new Map<string, string>();
+  let currentProject: ProjectState | undefined;
   const syntaxOnlyReported = new Set<string>();
   const syntaxCheckers = new WeakMap<ts.SourceFile, ts.TypeChecker>();
   const syntaxCheckerFor = (state: FileState): ts.TypeChecker => {
@@ -181,11 +215,13 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
     }
   };
 
-  const buildState = async (sourceFile: ts.SourceFile, container?: NodeSnapshot): Promise<FileState> => {
+  const buildState = (sourceFile: ts.SourceFile, observation: FileObservation, projectState?: ProjectState, container?: NodeSnapshot): FileState => {
     const path = canonicalPath(sourceFile.fileName);
-    const stat = await lstat(path);
-    const revision = revisionOf(stat);
-    const resource = defineResource({ id: idFor(path), adapter: "ts", uri: pathToFileURL(path).href, revision });
+    const { revision } = observation;
+    const id = idFor(JSON.stringify([path, revision, projectState?.key, container?.id]));
+    const cached = resources.get(id);
+    if (cached !== undefined) return cached;
+    const resource = defineResource({ id, adapter: "ts", uri: pathToFileURL(path).href, revision });
     const nodeRecords = new Map<string, NodeRecord>();
     const visit = (node: ts.Node, parent?: ts.Node): void => {
       const local = localFor(node);
@@ -200,25 +236,46 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
       for (const child of children) visit(child, node);
     };
     visit(sourceFile);
-    statistics.sourceFilesParsed += 1;
-    const syntaxDiagnostics = service?.getProgram()?.getSyntacticDiagnostics(sourceFile) ??
-      ts.transpileModule(sourceFile.text, {
-        fileName: sourceFile.fileName,
-        reportDiagnostics: true,
-        compilerOptions,
-      }).diagnostics ?? [];
-    reportDiagnostics(sourceFile, revision, syntaxDiagnostics);
-    const state: FileState = Object.freeze({ resource, path, text: sourceFile.text, sourceFile, nodes: nodeRecords, ...(container === undefined ? {} : { container }) });
-    files.set(path, state); resources.set(resource.id, state);
+    if (!reportedSources.has(sourceFile)) {
+      reportedSources.add(sourceFile);
+      statistics.sourceFilesParsed += 1;
+      const syntaxDiagnostics = projectState?.program.getSyntacticDiagnostics(sourceFile) ??
+        ts.transpileModule(sourceFile.text, {
+          fileName: sourceFile.fileName,
+          reportDiagnostics: true,
+          compilerOptions: {},
+        }).diagnostics ?? [];
+      reportDiagnostics(sourceFile, revision, syntaxDiagnostics);
+    }
+    const state: FileState = Object.freeze({ resource, path, text: sourceFile.text, sourceFile, nodes: nodeRecords, ...(projectState === undefined ? {} : { project: projectState }), ...(container === undefined ? {} : { container }) });
+    resources.set(resource.id, state);
     return state;
   };
 
-  const ensureProject = async (): Promise<void> => {
-    if (project === undefined || service !== undefined) return;
+  const ensureProject = (): ProjectState | undefined => {
+    if (project === undefined) return undefined;
     const configPath = project;
-    const config = ts.readConfigFile(configPath, ts.sys.readFile);
+    const inputs = new Map<string, FileObservation | undefined>();
+    const existence = new Map<string, boolean>();
+    let sealed = false;
+    const readObserved = (fileName: string): string | undefined => {
+      const path = canonicalPath(fileName);
+      if (!inputs.has(path) && !sealed) inputs.set(path, currentRevision(path) === undefined ? undefined : observeFile(path));
+      return inputs.get(path)?.text;
+    };
+    const fileExists = (fileName: string): boolean => {
+      const path = canonicalPath(fileName);
+      if (!existence.has(path) && !sealed) existence.set(path, ts.sys.fileExists(path));
+      return existence.get(path) ?? false;
+    };
+    const config = ts.readConfigFile(configPath, readObserved);
     if (config.error !== undefined) throw new TypeError(ts.flattenDiagnosticMessageText(config.error.messageText, "\n"));
-    const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, dirname(configPath), undefined, configPath);
+    const parsed = ts.parseJsonConfigFileContent(config.config, { ...ts.sys, readFile: readObserved, fileExists }, dirname(configPath), undefined, configPath);
+    const projectFiles = parsed.fileNames.map(canonicalPath);
+    const configuration = JSON.stringify([projectFiles, parsed.options, parsed.projectReferences]);
+    if (currentProject !== undefined && currentProject.configuration === configuration &&
+      [...currentProject.inputs].every(([path, observation]) => currentRevision(path) === observation?.revision) &&
+      [...currentProject.existence].every(([path, exists]) => ts.sys.fileExists(path) === exists)) return currentProject;
     if ((parsed.projectReferences?.length ?? 0) > 0) {
       diagnostics.push(defineDiagnostic({
         code: "ts.project-references-unsupported",
@@ -227,41 +284,52 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
         locations: [{ kind: "source", origin: { uri: pathToFileURL(configPath).href } }],
       }));
     }
-    projectFiles = parsed.fileNames.map(canonicalPath);
-    compilerOptions = parsed.options;
-    for (const path of projectFiles) versions.set(path, "1");
     const host: ts.LanguageServiceHost = {
       getScriptFileNames: () => [...projectFiles],
-      getScriptVersion: (fileName) => versions.get(canonicalPath(fileName)) ?? "1",
-      getScriptSnapshot: (fileName) => { const text = ts.sys.readFile(fileName); return text === undefined ? undefined : ts.ScriptSnapshot.fromString(text); },
+      getScriptVersion: () => "1",
+      getScriptSnapshot: (fileName) => { const text = readObserved(fileName); return text === undefined ? undefined : ts.ScriptSnapshot.fromString(text); },
       getCurrentDirectory: () => dirname(configPath),
-      getCompilationSettings: () => compilerOptions,
+      getCompilationSettings: () => parsed.options,
       getDefaultLibFileName: ts.getDefaultLibFilePath,
-      fileExists: ts.sys.fileExists, readFile: ts.sys.readFile, readDirectory: ts.sys.readDirectory,
+      fileExists, readFile: readObserved,
     };
-    service = ts.createLanguageService(host);
+    const service = ts.createLanguageService(host);
     statistics.programsCreated += 1;
     const program = service.getProgram();
-    if (program !== undefined) {
-      const sources = program.getSourceFiles().filter((source) => projectFiles.includes(canonicalPath(source.fileName)));
-      await Promise.all(sources.map((source) => buildState(source)));
+    if (program === undefined) { service.dispose(); throw new TypeError("TypeScript compiler could not create a project program."); }
+    sealed = true;
+    const key = idFor(JSON.stringify([configuration, [...inputs].map(([path, value]) => [path, value?.revision]), [...existence]]));
+    const state: ProjectState = { key, service, program, files: new Map(), inputs, existence, configuration };
+    for (const source of program.getSourceFiles()) {
+      const path = canonicalPath(source.fileName);
+      if (!projectFiles.includes(path)) continue;
+      const observation = inputs.get(path);
+      if (observation !== undefined) state.files.set(path, buildState(source, observation, state));
     }
+    currentProject = state;
+    return state;
   };
 
   const openPath = async (path: string, container: NodeSnapshot | undefined, context: OpenContext): Promise<ResourceHandle> => {
-    abort(context.signal); statistics.opened += 1;
-    await ensureProject();
+    abort(context.signal);
+    const projectState = ensureProject();
     const absolute = canonicalPath(path);
-    let state = files.get(absolute);
+    let state = projectState?.files.get(absolute);
     if (state === undefined) {
-      const text = await readFile(absolute, "utf8");
-      // Let the compiler infer TSX/JSX as well as TS/JS from the file extension.
-      const source = ts.createSourceFile(absolute, text, ts.ScriptTarget.Latest, true);
-      state = await buildState(source, container);
+      const observation = observeFile(absolute);
+      const key = JSON.stringify([absolute, observation.revision]);
+      const source = syntaxSources.get(key) ?? ts.createSourceFile(absolute, observation.text, ts.ScriptTarget.Latest, true);
+      syntaxSources.set(key, source);
+      state = buildState(source, observation, undefined, container);
       if (project !== undefined) diagnostics.push(defineDiagnostic({ code: "ts.outside-project", severity: "info", message: `${pathToFileURL(absolute).href} is outside the configured project and uses syntax-only mode.`, locations: [{ kind: "source", origin: { uri: pathToFileURL(absolute).href } }] }));
     } else if (container !== undefined) {
-      state = Object.freeze({ ...state, container }); files.set(absolute, state); resources.set(state.resource.id, state);
+      state = buildState(state.sourceFile, { text: state.text, revision: state.resource.revision! }, projectState, container);
     }
+    if (container?.origin?.revision !== undefined && container.origin.revision !== state.resource.revision) {
+      throw new Error(`TypeScript source changed after filesystem observation: ${state.resource.uri}.`);
+    }
+    abort(context.signal);
+    statistics.opened += 1;
     if (project === undefined && !syntaxOnlyReported.has(absolute)) {
       syntaxOnlyReported.add(absolute);
       diagnostics.push(defineDiagnostic({
@@ -275,13 +343,6 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
     return Object.freeze({ resource: state.resource, async close() { if (!closed) { closed = true; statistics.closed += 1; } } });
   };
 
-  const checker = (): ts.TypeChecker | undefined => service?.getProgram()?.getTypeChecker();
-  const canonicalSymbol = (node: ts.Node): ts.Symbol | undefined => {
-    const value = checker()?.getSymbolAtLocation(node);
-    if (value === undefined) return undefined;
-    return (value.flags & ts.SymbolFlags.Alias) !== 0 ? checker()?.getAliasedSymbol(value) : value;
-  };
-  const findNodeId = (node: ts.Node): NodeId | undefined => files.get(canonicalPath(node.getSourceFile().fileName))?.nodes.get(localFor(node))?.snapshot.id;
   const stateFor = (id: string): FileState => { const value = resources.get(id); if (value === undefined) throw new TypeError(`Unknown TypeScript resource ${id}.`); return value; };
 
   const read: ReadCapability = {
@@ -291,7 +352,7 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
       abort(request.signal); const state = stateFor(id.resource); const record = state.nodes.get(id.local); if (record === undefined) return; const direction = request.direction ?? "forward";
       if (direction === "forward" && (request.names === undefined || request.names.includes("ts::children")) && (request.roles === undefined || request.roles.includes("child"))) for (const [ordinal, local] of record.children.entries()) { const child = state.nodes.get(local); if (child !== undefined) yield defineEdge({ name: "ts::children", role: "child", from: id, to: child.snapshot.id, ordinal }); }
       if (direction === "reverse" && record.parent !== undefined && (request.names === undefined || request.names.includes("ts::children")) && (request.roles === undefined || request.roles.includes("child"))) { const parent = state.nodes.get(record.parent); if (parent !== undefined) yield defineEdge({ name: "ts::children", role: "child", from: parent.snapshot.id, to: id, ordinal: parent.children.indexOf(id.local) }); }
-      if (direction === "forward" && ts.isIdentifier(record.node) && (request.names === undefined || request.names.includes("ts::symbol")) && (request.roles === undefined || request.roles.includes("reference"))) { const symbol = canonicalSymbol(record.node); const declaration = symbol?.declarations?.[0]; const target = declaration === undefined ? undefined : findNodeId(ts.isIdentifier(declaration) ? declaration : (declaration as ts.NamedDeclaration).name ?? declaration); if (target !== undefined && !(target.resource === id.resource && target.local === id.local)) yield defineEdge({ name: "ts::symbol", role: "reference", from: id, to: target, ordinal: 0 }); }
+      if (direction === "forward" && ts.isIdentifier(record.node) && (request.names === undefined || request.names.includes("ts::symbol")) && (request.roles === undefined || request.roles.includes("reference"))) { const symbol = canonicalSymbol(state, record.node); const declaration = symbol?.declarations?.[0]; const target = declaration === undefined ? undefined : findNodeId(state, ts.isIdentifier(declaration) ? declaration : (declaration as ts.NamedDeclaration).name ?? declaration); if (target !== undefined && !(target.resource === id.resource && target.local === id.local)) yield defineEdge({ name: "ts::symbol", role: "reference", from: id, to: target, ordinal: 0 }); }
       if (direction === "forward" && ts.isSourceFile(record.node) && state.container !== undefined && (request.names === undefined || request.names.includes("ts::container")) && (request.roles === undefined || request.roles.includes("reference"))) yield defineEdge({ name: "ts::container", role: "reference", from: id, to: state.container.id, ordinal: 0 });
     } }; },
     async hydrate(ids, projection: AttributeProjection) { const values: NodeSnapshot[] = []; for (const id of ids) { abort(projection.signal); const value = id.adapter === "ts" ? resources.get(id.resource)?.nodes.get(id.local) : undefined; if (value !== undefined) values.push(value.snapshot); } return Object.freeze(values); },
@@ -313,13 +374,14 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
     abort(context.signal); const state = stateFor(operation.resource); const record = state.nodes.get(operation.target.local); if (record === undefined) throw new TypeError("Unknown TypeScript operation target.");
     if (state.sourceFile.isDeclarationFile) throw new TypeError("Generated declaration files are projected read-only.");
     if (operation.kind === "ts::replace-call") { if (!ts.isCallExpression(record.node)) throw new TypeError("Expected call expression target."); const expression = record.node.expression; return Object.freeze([await changeFor(state, operation, [{ range: { start: expression.getStart(state.sourceFile), end: expression.end }, replacement: operation.payload.callee }])]); }
-    if (!ts.isIdentifier(record.node) || service === undefined) throw new TypeError("Symbol rename requires an identifier in configured-project mode.");
-    const locations = service.findRenameLocations(state.path, record.node.getStart(state.sourceFile), false, false, true) ?? [];
+    if (!ts.isIdentifier(record.node) || state.project === undefined) throw new TypeError("Symbol rename requires an identifier in configured-project mode.");
+    if (ensureProject() !== state.project) throw new Error(`TypeScript project changed for ${state.resource.uri}.`);
+    const locations = state.project.service.findRenameLocations(state.path, record.node.getStart(state.sourceFile), false, false, true) ?? [];
     if (locations.length === 0) throw new TypeError("TypeScript compiler could not prove rename locations.");
     const grouped = new Map<string, TypeScriptPatch[]>();
     for (const location of locations) { const path = canonicalPath(location.fileName); const values = grouped.get(path) ?? []; values.push({ range: { start: location.textSpan.start, end: location.textSpan.start + location.textSpan.length }, replacement: operation.payload.name }); grouped.set(path, values); }
     const changes: TypeScriptChange[] = [];
-    const groupedChanges = await Promise.all([...grouped].map(async ([path, patches]) => { const targetState = files.get(path); return targetState === undefined ? undefined : changeFor(targetState, operation, patches); }));
+    const groupedChanges = await Promise.all([...grouped].map(async ([path, patches]) => { const targetState = state.project?.files.get(path); return targetState === undefined ? undefined : changeFor(targetState, operation, patches); }));
     changes.push(...groupedChanges.filter((change): change is TypeScriptChange => change !== undefined));
     return Object.freeze(changes);
   } };
@@ -350,9 +412,11 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
       abort(context.signal);
       const state = stateFor(resource.id);
       if (resource.adapter !== "ts" || resource.uri !== state.resource.uri || resource.revision !== state.resource.revision) throw new TypeError("TypeScript module resource does not match its opened snapshot.");
-      const program = service?.getProgram();
+      const program = state.project?.program;
       const configured = program && program.getSourceFile(state.path) === state.sourceFile ? program.getTypeChecker() : undefined;
-      return moduleInfoFor(state.sourceFile, state.resource, new Map([...files.values()].map(file => [file.sourceFile, file.resource])), configured, () => syntaxCheckerFor(state));
+      const observedResources = new Map([...state.project?.files.values() ?? []].map(file => [file.sourceFile, file.resource]));
+      observedResources.set(state.sourceFile, state.resource);
+      return moduleInfoFor(state.sourceFile, state.resource, observedResources, configured, () => syntaxCheckerFor(state));
     },
     diagnostics: () => Object.freeze([...diagnostics]),
     statistics: () => Object.freeze({ ...statistics }),
@@ -361,15 +425,28 @@ export const createTypeScriptAdapter = (options: TypeScriptAdapterOptions = {}):
   return adapter;
 };
 
-const mountedNode = (adapter: TypeScriptAdapter, snapshot: NodeSnapshot, file: NavigableNodeHandle): NavigableNodeHandle => Object.freeze({
+const mountedNode = (adapter: TypeScriptAdapter, snapshot: NodeSnapshot, file: NavigableNodeHandle, mountedResource = snapshot.id.resource): NavigableNodeHandle => Object.freeze({
   snapshot,
-  edges(request: EdgeRequest = {}) { return adapter.read.edges(snapshot.id, request); },
-  async resolve(id: NodeId, signal?: AbortSignal) { if (id.adapter !== "ts") { if (id.adapter === file.snapshot.id.adapter && id.resource === file.snapshot.id.resource && id.local === file.snapshot.id.local) return file; return file.resolve(id, signal); } const [value] = await adapter.read.hydrate([id], { attributes: [], ...(signal === undefined ? {} : { signal }) }); return value === undefined ? undefined : mountedNode(adapter, value, file); },
+  async *edges(request: EdgeRequest = {}) {
+    yield* adapter.read.edges(snapshot.id, request);
+    if (snapshot.kind === "ts::source-file" && snapshot.id.resource === mountedResource) yield* mountParentEdges(snapshot, file.snapshot, "ts::mount", request);
+  },
+  async resolve(id: NodeId, signal?: AbortSignal) { if (id.adapter !== "ts") { if (id.adapter === file.snapshot.id.adapter && id.resource === file.snapshot.id.resource && id.local === file.snapshot.id.local) return file; return file.resolve(id, signal); } const [value] = await adapter.read.hydrate([id], { attributes: [], ...(signal === undefined ? {} : { signal }) }); return value === undefined ? undefined : mountedNode(adapter, value, file, mountedResource); },
 });
 
 const mountedHandle = (file: NavigableNodeHandle, adapter: TypeScriptAdapter): NavigableNodeHandle => Object.freeze({
   snapshot: file.snapshot,
-  edges(request: EdgeRequest = {}) { return { async *[Symbol.asyncIterator]() { for await (const edge of file.edges(request)) yield edge; if (file.snapshot.kind !== "fs::file" || (request.direction ?? "forward") !== "forward" || (request.names !== undefined && !request.names.includes("ts::mount")) || (request.roles !== undefined && !request.roles.includes("child"))) return; const implementation = adapterInternals.get(adapter); if (implementation === undefined) return; const handle = await implementation.openMounted(file.snapshot, request.signal === undefined ? {} : { signal: request.signal }); if (handle === undefined) return; try { for await (const root of adapter.read.roots(handle.resource, request)) yield defineEdge({ name: "ts::mount", role: "child", from: file.snapshot.id, to: root.id, ordinal: 0 }); } finally { await handle.close(); } } }; },
-  async resolve(id: NodeId, signal?: AbortSignal) { if (id.adapter !== "ts") return file.resolve(id, signal); const [value] = await adapter.read.hydrate([id], { attributes: [], ...(signal === undefined ? {} : { signal }) }); return value === undefined ? undefined : mountedNode(adapter, value, file); },
+  edges(request: EdgeRequest = {}) { return { async *[Symbol.asyncIterator]() { for await (const edge of file.edges(request)) yield edge; if (file.snapshot.kind !== "fs::file" || (request.direction ?? "forward") !== "forward" || (request.names !== undefined && !request.names.includes("ts::mount")) || (request.roles !== undefined && !request.roles.includes("child"))) return; const implementation = adapterInternals.get(adapter); if (implementation === undefined) return; const handle = await implementation.openMounted(file.snapshot, request.signal === undefined ? {} : { signal: request.signal }); if (handle === undefined) return; try { for await (const root of adapter.read.roots(handle.resource, request)) yield defineEdge({ name: "ts::mount", role: "child", from: file.snapshot.id, to: root.id, ordinal: 0 }); } finally { await closeQueryResource(handle); } } }; },
+  async resolve(id: NodeId, signal?: AbortSignal) {
+    abort(signal);
+    if (id.adapter !== "ts") {
+      const resolved = await file.resolve(id, signal);
+      return resolved === undefined ? undefined : mountedHandle(resolved, adapter);
+    }
+    const [value] = await adapter.read.hydrate([id], {
+      attributes: [], ...(signal === undefined ? {} : { signal }),
+    });
+    return value === undefined ? undefined : mountedNode(adapter, value, mountedHandle(file, adapter));
+  },
 });
 export const mountTypeScript = <Captures extends CaptureMap>(files: Query<NavigableNodeHandle, Captures>, adapter: TypeScriptAdapter): Query<NavigableNodeHandle, Captures> => files.project((file) => mountedHandle(file, adapter), `mount typescript (${adapter.mode})`);

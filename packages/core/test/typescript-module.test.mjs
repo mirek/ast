@@ -394,7 +394,7 @@ export default LocalType;
 }));
 
 
-test("files created after project capture retain syntax-only exports", async () => fixture(async (root) => {
+test("files created after project capture enter the refreshed configured project", async () => fixture(async (root) => {
   await writeFile(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions: { module: "nodenext" }, files: ["seed.ts", "later.ts"] }));
   await writeFile(join(root, "seed.ts"), "export const seed = 1;\n");
   const adapter = createTypeScriptAdapter({ project: join(root, "tsconfig.json") });
@@ -405,9 +405,9 @@ test("files created after project capture retain syntax-only exports", async () 
   const later = await adapter.read.open({ uri: join(root, "later.ts") }, {});
   try {
     const info = await adapter.moduleInfo(later.resource);
-    assert.equal(info.mode, "syntax-only");
+    assert.equal(info.mode, "configured-project");
     assert.deepEqual(info.exports.map(item => item.name), ["later"]);
-    assert.equal(info.imports[0].resolvedUri, undefined);
+    assert.ok(info.imports[0].resolvedUri?.endsWith("/seed.ts"));
     assert.deepEqual(await adapter.moduleInfo(later.resource), info);
   } finally { await later.close(); }
 }));
@@ -443,8 +443,16 @@ declare module "types" { export interface Extra {} }
   await inspect("local.ts", true);
   await inspect("mixed.ts", false);
   await inspect("mixed-star.ts", false);
-  await rm(join(root, "ambient.d.ts"));
-  await inspect("direct.ts", true);
+  const captured = await adapter.read.open({ uri: join(root, "direct.ts") }, {});
+  try {
+    const before = await adapter.moduleInfo(captured.resource);
+    await rm(join(root, "ambient.d.ts"));
+    const refreshed = await adapter.read.open({ uri: join(root, "direct.ts") }, {});
+    try {
+      assert.deepEqual((await adapter.moduleInfo(refreshed.resource)).exports, []);
+      assert.deepEqual(await adapter.moduleInfo(captured.resource), before);
+    } finally { await refreshed.close(); }
+  } finally { await captured.close(); }
 }));
 
 
@@ -470,4 +478,41 @@ test("diamond wildcard graphs finish within a bounded child process", async () =
   const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { encoding: "utf8", timeout: 15000 });
   assert.equal(result.error, undefined, String(result.error));
   assert.equal(result.status, 0, result.stderr);
+}));
+
+
+test("module inventories retain project and syntax snapshots across reopen", async () => fixture(async (root) => {
+  await writeFile(join(root, "lib.ts"), "/** Original. */ export class Original {}\n");
+  const path = join(root, "index.ts");
+  await writeFile(path, 'export { Original } from "./lib.js";\n');
+  const adapter = createTypeScriptAdapter({ project: join(root, "tsconfig.json") });
+  const earlier = await adapter.read.open({ uri: path }, {});
+  try {
+    const before = await adapter.moduleInfo(earlier.resource);
+    assert.ok(before.exports[0].origin.revision);
+    await writeFile(join(root, "lib.ts"), "/** Updated. */ export class Updated {}\n");
+    await writeFile(path, 'export { Updated } from "./lib.js";\n');
+    const later = await adapter.read.open({ uri: path }, {});
+    try {
+      const after = await adapter.moduleInfo(later.resource);
+      assert.deepEqual(after.exports.map(item => item.name), ["Updated"]);
+      assert.notEqual(after.exports[0].origin.revision, before.exports[0].origin.revision);
+      assert.deepEqual(await adapter.moduleInfo(earlier.resource), before);
+    } finally { await later.close(); }
+    assert.deepEqual(await adapter.moduleInfo(earlier.resource), before);
+  } finally { await earlier.close(); }
+
+  const syntax = createTypeScriptAdapter();
+  await writeFile(path, "export namespace Types { export interface Item {} }\n");
+  const first = await syntax.read.open({ uri: path }, {});
+  try {
+    const before = await syntax.moduleInfo(first.resource);
+    await writeFile(path, "export namespace Types { export const item = 1 }\n");
+    const second = await syntax.read.open({ uri: path }, {});
+    try {
+      assert.equal((await syntax.moduleInfo(second.resource)).exports[0].typeOnly, false);
+      assert.equal(before.exports[0].typeOnly, true);
+      assert.deepEqual(await syntax.moduleInfo(first.resource), before);
+    } finally { await second.close(); }
+  } finally { await first.close(); }
 }));

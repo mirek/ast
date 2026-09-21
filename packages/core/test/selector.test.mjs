@@ -237,3 +237,133 @@ test("selector edge reads propagate cancellation and close the source", async ()
   assert.equal(adapter.statistics().opened, 1);
   assert.equal(adapter.statistics().closed, 1);
 });
+
+test('parent and ancestor selectors use containment, preserve captures, and work in relative predicates', async () => {
+  const adapter = createInMemoryAdapter(fixture());
+  const source = { uri: 'memory:selectors' };
+  assert.deepEqual(await ids(select(adapter, source, 'memory::leaf[name = "alpha"] < memory::item')), ['alpha', 'alpha']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::leaf << memory::root')), ['root', 'root', 'root', 'root']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::leaf:has(< memory::item[name = "beta"])')), ['beta-leaf', 'beta-leaf']);
+  const rows = await select(adapter, source, 'memory::leaf as $leaf << memory::root')
+    .project((root, captures) => [captures.leaf.snapshot.id.local, root.snapshot.id.local]).toArray();
+  assert.deepEqual(rows, [['alpha-leaf', 'root'], ['beta-leaf', 'root'], ['alpha-leaf', 'root'], ['beta-leaf', 'root']]);
+  assert.equal(adapter.statistics().opened, adapter.statistics().closed);
+});
+
+test('path cycle pruning terminates traversal without collapsing distinct containment paths', async () => {
+  const graph = fixture();
+  graph.roots = ['root'];
+  graph.edges.push(edge('alpha', 'root', 1), edge('beta', 'alpha-leaf', 1));
+  const adapter = createInMemoryAdapter(graph);
+  const query = fromAdapter(adapter, { uri: 'memory:selectors' }).traverse({ roles: ['child'], maxDepth: 4, cycle: 'prune' });
+  assert.deepEqual(await ids(query), ['alpha', 'alpha-leaf', 'beta', 'beta-leaf', 'alpha-leaf', 'target']);
+});
+
+test('implicit selector tree expansion prunes cycles before evaluating ancestors', async () => {
+  const graph = fixture();
+  graph.roots = ['root'];
+  graph.edges.push(edge('alpha', 'root', 1));
+  const adapter = createInMemoryAdapter(graph);
+  const query = select(adapter, { uri: 'memory:selectors' }, 'memory::leaf << memory::root').take(5);
+  assert.deepEqual(await ids(query), ['root', 'root']);
+});
+
+test('reverse sibling selectors return previous nodes nearest first and preserve captures', async () => {
+  const adapter = createInMemoryAdapter(fixture());
+  const source = { uri: 'memory:selectors' };
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item[name = "beta"] <+ memory::item')), ['alpha', 'alpha']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::target <~ memory::item')), ['beta', 'alpha', 'beta', 'alpha']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item[name = "alpha"] <+ memory::item')), []);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item:has(<+ memory::item[name = "alpha"])')), ['beta', 'beta']);
+  const rows = await select(adapter, source, 'memory::target as $start <~ memory::item')
+    .project((item, captures) => [captures.start.snapshot.id.local, item.snapshot.id.local]).toArray();
+  assert.deepEqual(rows, [['target', 'beta'], ['target', 'alpha'], ['target', 'beta'], ['target', 'alpha']]);
+});
+
+test('reverse siblings reject unordered containment before opening a source', () => {
+  const adapter = createInMemoryAdapter(fixture('unknown'));
+  for (const operator of ['<+', '<~']) {
+    assert.throws(() => select(adapter, { uri: 'memory:selectors' }, `memory::item ${operator} memory::item`), error => error.diagnostics[0].code === 'selector.unordered-sibling');
+  }
+  assert.equal(adapter.statistics().opened, 0);
+});
+
+test('kind-qualified selectors reject attributes belonging only to a different kind', () => {
+  const adapter = createInMemoryAdapter(fixture());
+  assert.throws(() => select(adapter, { uri: 'memory:selectors' }, 'memory::item[score = 3]'), error => error.diagnostics[0].code === 'selector.unknown-attribute');
+  assert.equal(adapter.statistics().opened, 0);
+});
+
+test('positional predicates count ordered children per parent including other node kinds', async () => {
+  const adapter = createInMemoryAdapter(fixture());
+  const source = { uri: 'memory:selectors' };
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item:first-child')), ['alpha', 'alpha']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item:nth-child(2)')), ['beta', 'beta']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item:last-child')), []);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::target:last-child')), ['target', 'target']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item:nth-last-child(2)')), ['beta', 'beta']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::leaf:only-child')), ['alpha-leaf', 'beta-leaf', 'alpha-leaf', 'beta-leaf']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::root:first-child')), []);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item:has(> memory::leaf:only-child)')), ['alpha', 'beta', 'alpha', 'beta']);
+});
+
+test('nth-child formulas support progressions without treating them as global result offsets', async () => {
+  const adapter = createInMemoryAdapter(fixture());
+  const source = { uri: 'memory:selectors' };
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item:nth-child(odd)')), ['alpha', 'alpha']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item:nth-child(even)')), ['beta', 'beta']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item:nth-child(-n + 2)')), ['alpha', 'beta', 'alpha', 'beta']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item:nth-child(2n+1)')), ['alpha', 'alpha']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item:nth-child(0)')), []);
+});
+
+test('position formulas and unordered parents fail validation before reading', () => {
+  const adapter = createInMemoryAdapter(fixture());
+  for (const formula of ['1.5', '1 2', 'n +', 'Infinity', '9007199254740992']) {
+    assert.throws(() => select(adapter, { uri: 'memory:selectors' }, `memory::item:nth-child(${formula})`), error => error.diagnostics[0].code === 'selector.position-formula');
+  }
+  const unordered = createInMemoryAdapter(fixture('unknown'));
+  assert.throws(() => select(unordered, { uri: 'memory:selectors' }, 'memory::item:first-child'), error => error.diagnostics[0].code === 'selector.unordered-position');
+  assert.equal(adapter.statistics().opened, 0);
+  assert.equal(unordered.statistics().opened, 0);
+});
+
+test('scope anchors each input node and remains stable through traversal and boolean predicates', async () => {
+  const adapter = createInMemoryAdapter(fixture());
+  const source = { uri: 'memory:selectors' };
+  assert.deepEqual(await ids(select(adapter, source, ':scope')), ['root', 'root']);
+  assert.deepEqual(await ids(select(adapter, source, ':scope > memory::item')), ['alpha', 'beta', 'alpha', 'beta']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::leaf << :scope')), ['root', 'root', 'root', 'root']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item:not(:scope)')), ['alpha', 'beta', 'alpha', 'beta']);
+  assert.deepEqual(await ids(select(adapter, source, ':is(:scope)')), ['root', 'root']);
+  const captures = await select(adapter, source, ':scope as $root > memory::item')
+    .project((_node, values) => Object.keys(values)).toArray();
+  assert.deepEqual(captures, [['root'], ['root'], ['root'], ['root']]);
+});
+
+test('has scopes are local to their anchor and do not leak from nested predicates', async () => {
+  const adapter = createInMemoryAdapter(fixture());
+  const source = { uri: 'memory:selectors' };
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item:has(:scope > memory::leaf)')), ['alpha', 'beta', 'alpha', 'beta']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item:has(:scope > memory::leaf):not(:scope)')), ['alpha', 'beta', 'alpha', 'beta']);
+  assert.deepEqual(await ids(select(adapter, source, ':scope:has(> memory::item:has(:scope > memory::leaf))')), ['root', 'root']);
+});
+
+test('positional and sibling validation uses only the active containment views', async () => {
+  const base = createInMemoryAdapter(fixture());
+  const adapter = { ...base, schema: {
+    ...base.schema,
+    capabilities: { ...base.schema.capabilities, ordering: 'unknown' },
+    edges: [...base.schema.edges, { name: 'memory::unordered', role: 'child', from: ['memory::root'], to: ['memory::item'], ordering: 'unknown' }],
+    treeViews: [
+      { name: 'memory::ordered', rootKinds: ['memory::root'], childEdges: ['memory::children'], default: true },
+      { name: 'memory::other', rootKinds: ['memory::root'], childEdges: ['memory::unordered'] },
+    ],
+  } };
+  const source = { uri: 'memory:selectors' };
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item:first-child')), ['alpha', 'alpha']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item:has(> memory::leaf:only-child)', { treeView: 'memory::ordered' })), ['alpha', 'beta', 'alpha', 'beta']);
+  assert.deepEqual(await ids(select(adapter, source, 'memory::item + memory::item', { treeView: 'memory::ordered' })), ['beta', 'beta']);
+  assert.throws(() => select(adapter, source, 'memory::item:first-child', { treeView: 'memory::other' }), error => error.diagnostics[0].code === 'selector.unordered-position');
+  assert.throws(() => select(adapter, source, 'memory::item:has(+ memory::item)', { treeView: 'memory::other' }), error => error.diagnostics[0].code === 'selector.unordered-sibling');
+});

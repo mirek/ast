@@ -26,3 +26,30 @@ Keep process behavior and terminal presentation in `@mirek/ast-cli`. Keep
 `@mirek/ast` deterministic and independent of CLI concerns. Prefer Node.js
 built-ins and justify runtime dependencies that materially expand the trusted
 surface.
+
+Tree-sitter syntax uses the pinned language-pack WASM registry; custom local
+WASMs use web-tree-sitter. Verify actual installed grammar coverage, source
+coordinates, and explicit tree/node cleanup rather than assuming upstream's
+native language catalog matches the WASM build. Keep semantic operations in
+their owning adapters. Query projections compose Prelude async transforms while
+preserving captures, serial backpressure, and cancellation ownership.
+
+When changing mount resolvers, test directory traversal, container reentry,
+embedded mounts, and both orders of stacked adapters. Preserve decoration on
+resolved handles without opening a mount until its edge is requested.
+Cover reverse mount containment and explicit composite tree views as well;
+parent/ancestor navigation must preserve container ownership, and path cycle
+pruning must retain duplicates reached through distinct graph paths.
+Selector validation for an explicit kind must not borrow attribute declarations
+from other kinds; diagnose invalid queries before opening their sources.
+When changing adapter caches, test reopened revisions, concurrent mounts, and
+earlier handles. TypeScript symbols and rename locations must belong to the
+same observed project; refreshes must not retarget an earlier syntax graph.
+Module inventories must use the resource’s captured project and source identities,
+including declaration revisions; test earlier inventories after reopening
+changed project inputs and syntax-only files.
+When changing sources, mounts, or buffering operators, preserve resource
+ownership through buffered navigation. Runtime-owned closes use
+`closeQueryResource`; buffers collect upstream under `collectWithResources`
+and release in `finally`. Test nested buffers, early return, cancellation,
+collection failures, and cleanup failures without changing caller signals.
